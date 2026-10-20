@@ -67,6 +67,7 @@ export const sendChatMessage = async (payload: {
   messageType?: 'text' | 'image' | 'price_quote';
   mediaUrl?: string;
   metadata?: any;
+  senderId?: string;
 }) => {
   const socket = await getSocket();
   socket.emit('send_message', payload);
