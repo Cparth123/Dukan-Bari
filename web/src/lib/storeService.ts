@@ -138,12 +138,16 @@ export function playNotificationChime() {
 // -------------------------------------------------------------
 // STORES & PRODUCTS
 // -------------------------------------------------------------
-export async function getStoreWithProducts(storeId?: string): Promise<{
+export async function getStoreWithProducts(storeId?: string, ownerId?: string): Promise<{
   store: DbStore | null;
   products: DbProduct[];
 }> {
   try {
-    const url = storeId ? `/api/store?id=${encodeURIComponent(storeId)}` : '/api/store';
+    const params = new URLSearchParams();
+    if (storeId) params.set('id', storeId);
+    if (ownerId) params.set('owner_id', ownerId);
+    const qs = params.toString();
+    const url = qs ? `/api/store?${qs}` : '/api/store';
     const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) return { store: null, products: [] };
     const json = await res.json();

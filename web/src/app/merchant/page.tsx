@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase';
 import {
   Store,
   Power,
@@ -126,8 +127,13 @@ const CATEGORY_OPTIONS = [
 ];
 
 export default function DukandarPortal() {
-  const { profile, signOut } = useAuth();
+  const { user, profile, role, loading: authLoading, signOut } = useAuth();
   const router = useRouter();
+
+  // Authentication & Token Verification State
+  const [tokenVerified, setTokenVerified] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [verifyingSession, setVerifyingSession] = useState(true);
 
   // Active Tab: 'profile' | 'products' | 'offers' | 'enquiries' | 'conversations'
   const [activeTab, setActiveTab] = useState<'profile' | 'products' | 'offers' | 'enquiries' | 'conversations'>('profile');
@@ -148,10 +154,10 @@ export default function DukandarPortal() {
   // 1-Tap Live Store Toggle (OPEN / CLOSED)
   const [isLiveOpen, setIsLiveOpen] = useState(true);
 
-  // Store Profile State (100% Dynamic - starts clean or loads from Supabase/storage)
-  const [currentStoreId, setCurrentStoreId] = useState<string>('cc5d785f-22d9-4c32-b047-5973a0c7f4d1');
-  const [storeName, setStoreName] = useState('Champion Hair Art');
-  const [category, setCategory] = useState('Hair Saloon & Grooming');
+  // Store Profile State (User-wise dynamic)
+  const [currentStoreId, setCurrentStoreId] = useState<string>('');
+  const [storeName, setStoreName] = useState('');
+  const [category, setCategory] = useState('Grocery & Kirana');
   const [customCategory, setCustomCategory] = useState('');
   const [businessOfferingType, setBusinessOfferingType] = useState<'product_selling' | 'service_providing' | 'both'>('product_selling');
   const [bannerUrl, setBannerUrl] = useState('');
@@ -172,6 +178,49 @@ export default function DukandarPortal() {
   const [isDetectingGPS, setIsDetectingGPS] = useState(false);
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
   const [profileSaved, setProfileSaved] = useState(false);
+
+  // -------------------------------------------------------------
+  // 1. TOKEN & ACCESS VERIFICATION EFFECT
+  // Ensures only authenticated users with valid tokens and merchant/admin
+  // roles can access this page. Other users are redirected or denied.
+  // -------------------------------------------------------------
+  useEffect(() => {
+    async function verifyMerchantToken() {
+      if (authLoading) return;
+
+      if (!user) {
+        console.warn('[Merchant Studio] Unauthenticated access attempt. Redirecting to login.');
+        router.push('/login?redirect=/merchant');
+        return;
+      }
+
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error || !session || !session.access_token) {
+          console.warn('[Merchant Studio] Session token missing or expired. Redirecting to login.');
+          router.push('/login?redirect=/merchant');
+          return;
+        }
+
+        const userRole = role || profile?.role;
+        // Customer profile cannot access merchant studio
+        if (userRole === 'customer') {
+          setAccessDenied(true);
+          setVerifyingSession(false);
+          return;
+        }
+
+        setTokenVerified(true);
+      } catch (err) {
+        console.error('[Merchant Studio] Token verification error:', err);
+        router.push('/login?redirect=/merchant');
+      } finally {
+        setVerifyingSession(false);
+      }
+    }
+
+    verifyMerchantToken();
+  }, [user, role, profile, authLoading, router]);
 
   // Image Uploading States
   const [uploadingBanner, setUploadingBanner] = useState(false);
@@ -214,11 +263,20 @@ export default function DukandarPortal() {
   const [enquiries, setEnquiries] = useState<MockEnquiry[]>([]);
   const [replyQuote, setReplyQuote] = useState<{ [key: string]: string }>({});
 
-  // Load store, products, offers, enquiries & conversations from Supabase on mount
+  // -------------------------------------------------------------
+  // 2. USER-WISE DATA LOADING
+  // Loads store, products, offers, enquiries & conversations ONLY
+  // for the authenticated user (matching user.id)
+  // -------------------------------------------------------------
   useEffect(() => {
+    if (!tokenVerified || !user) return;
+
     async function loadMerchantData() {
       try {
-        const { store: dbStore, products: dbProducts } = await getStoreWithProducts();
+        const { store: dbStore, products: dbProducts } = await getStoreWithProducts(
+          profile?.store_id || undefined,
+          user.id
+        );
         if (dbStore) {
           setCurrentStoreId(dbStore.id);
           setStoreName(dbStore.store_name);
@@ -303,6 +361,16 @@ export default function DukandarPortal() {
             const msgs = await getConversationMessages(dbConvs[0].id);
             setConversationMessages(msgs);
           }
+        } else {
+          // Initialize clean template for this merchant
+          setCurrentStoreId('');
+          setStoreName(profile?.full_name ? `${profile.full_name}'s Dukaan` : '');
+          setPhoneContact(profile?.phone_number || '');
+          setWhatsappNumber(profile?.phone_number || '');
+          setProducts([]);
+          setOffers([]);
+          setEnquiries([]);
+          setConversations([]);
         }
 
         // Initialize Socket.io real-time listeners
@@ -341,16 +409,22 @@ export default function DukandarPortal() {
         console.warn('Could not load merchant data from Supabase:', err);
       }
     }
-    loadMerchantData();
-  }, []);
+  }, [tokenVerified, user, profile?.store_id]);
 
   // Sync to Supabase `stores` table
   const saveStoreProfile = async () => {
+    if (!user) {
+      alert('Authentication required: please sign in to save store details.');
+      router.push('/login?redirect=/merchant');
+      return;
+    }
+
     const finalCategory = category === 'Other / Custom' && customCategory.trim() ? customCategory : category;
 
     const saved = await syncStoreToSupabase({
       id: currentStoreId || undefined,
-      store_name: storeName,
+      owner_id: user.id,
+      store_name: storeName.trim() || 'My Local Store',
       category: finalCategory,
       business_offering_type: businessOfferingType,
       banner_url: bannerUrl,
@@ -867,6 +941,76 @@ export default function DukandarPortal() {
     }
   };
 
+  // -------------------------------------------------------------
+  // ACCESS CONTROL & TOKEN VERIFICATION GUARDS
+  // -------------------------------------------------------------
+  if (authLoading || verifyingSession) {
+    return (
+      <div className="min-h-screen bg-[#f1f3f6] flex flex-col items-center justify-center p-6 space-y-4">
+        <RefreshCw className="w-10 h-10 text-[#2874f0] animate-spin" />
+        <h2 className="text-lg font-black text-slate-800">
+          Verifying Merchant Token & Security Access...
+        </h2>
+        <p className="text-xs text-slate-500">
+          Validating authenticated merchant credentials and counter privileges...
+        </p>
+      </div>
+    );
+  }
+
+  if (accessDenied) {
+    return (
+      <div className="min-h-screen bg-[#f1f3f6] flex flex-col items-center justify-center p-6">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl p-8 border border-slate-200 text-center space-y-5 animate-in fade-in zoom-in-95">
+          <div className="w-16 h-16 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center mx-auto">
+            <AlertCircle className="w-8 h-8" />
+          </div>
+          <div>
+            <h2 className="text-xl font-black text-slate-900">
+              Merchant Access Restricted
+            </h2>
+            <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+              Your account (<span className="font-semibold text-slate-800">{user?.email || profile?.full_name}</span>) is currently signed in with a <strong className="text-[#2874f0] font-black uppercase">Customer</strong> profile.
+              The Merchant Studio is exclusively for verified Shopkeepers, Vendors, and Service Providers.
+            </p>
+          </div>
+
+          <div className="space-y-2.5 pt-2">
+            <Link
+              href="/signup?role=shop_owner"
+              className="w-full py-2.5 px-4 bg-[#2874f0] hover:bg-[#1a5bc7] text-white text-xs font-black rounded-lg shadow-sm flex items-center justify-center gap-2 transition-colors"
+            >
+              <Store className="w-4 h-4" />
+              <span>Register as Dukandar / Merchant (0% Fee)</span>
+            </Link>
+
+            <Link
+              href="/explore"
+              className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg flex items-center justify-center gap-2 transition-colors"
+            >
+              <span>Explore Nearby Stores (Customer Feed)</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
+
+            <button
+              onClick={async () => {
+                await signOut();
+                router.push('/login?redirect=/merchant');
+              }}
+              className="w-full py-2 text-xs text-slate-500 hover:text-slate-800 font-semibold"
+            >
+              Switch Account / Sign In with Merchant Credentials
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!tokenVerified || !user) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-[#f1f3f6] text-slate-900 font-sans">
       {/* 1. Merchant Dashboard Header */}
@@ -904,15 +1048,28 @@ export default function DukandarPortal() {
               <ExternalLink className="w-3 h-3 opacity-70" />
             </Link>
 
+            {/* Authenticated Merchant Identity Badge */}
+            <div className="hidden md:flex flex-col text-right leading-tight">
+              <span className="text-[11px] font-black text-white truncate max-w-[150px]">
+                {profile?.full_name || user?.email?.split('@')[0] || 'Merchant'}
+              </span>
+              <span className="text-[9px] text-[#ffe500] font-bold uppercase tracking-wider">
+                {role === 'superadmin' ? 'Superadmin' : 'Verified Dukandar'}
+              </span>
+            </div>
+
             {/* Live Open / Closed 1-Tap Toggle (Syncs to Supabase) */}
             <button
               onClick={async () => {
                 const nextStatus = !isLiveOpen;
                 setIsLiveOpen(nextStatus);
-                await syncStoreToSupabase({
-                  id: currentStoreId,
-                  is_live_open: nextStatus
-                });
+                if (currentStoreId) {
+                  await syncStoreToSupabase({
+                    id: currentStoreId,
+                    owner_id: user?.id,
+                    is_live_open: nextStatus
+                  });
+                }
               }}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-extrabold transition-all shadow-sm ${
                 isLiveOpen
@@ -926,9 +1083,9 @@ export default function DukandarPortal() {
 
             {/* Logout */}
             <button
-              onClick={() => {
-                signOut();
-                router.push('/');
+              onClick={async () => {
+                await signOut();
+                router.push('/login?redirect=/merchant');
               }}
               className="p-1.5 rounded-full hover:bg-white/20 text-white/80 hover:text-white"
               title="Sign Out"

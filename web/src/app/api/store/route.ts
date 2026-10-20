@@ -41,8 +41,8 @@ export async function GET(request: Request) {
     const { data: store, error: storeError } = await query.maybeSingle();
     let finalStore = store;
 
-    if (!finalStore) {
-      // Check if any store exists
+    if (!finalStore && !ownerId && !id) {
+      // Check if any store exists (only for public anonymous fallback)
       const { data: anyStores } = await supabaseAdmin
         .from('stores')
         .select('*')
@@ -55,7 +55,7 @@ export async function GET(request: Request) {
     }
 
     if (!finalStore) {
-      return NextResponse.json({ success: false, store: null, products: [] });
+      return NextResponse.json({ success: true, store: null, products: [] });
     }
 
     // Auto-resolve banner image from Supabase Storage if banner_url is empty/null
@@ -162,7 +162,7 @@ export async function POST(request: Request) {
 
     const storePayload: any = {
       owner_id: ownerId,
-      store_name: body.store_name || body.name || 'Champion Hair Art',
+      store_name: body.store_name || body.name || 'My Local Store',
       category: body.category || 'Grocery & Kirana',
       business_offering_type: body.business_offering_type || 'service_providing',
       description: body.description || body.aboutText || '',
