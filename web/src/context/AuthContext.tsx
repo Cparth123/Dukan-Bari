@@ -106,6 +106,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.user) {
+          if (session.access_token && typeof window !== 'undefined') {
+            localStorage.setItem('dukan_auth_token', session.access_token);
+          }
           setUser(session.user);
           await fetchProfile(session.user.id, session.user.email);
         }
@@ -120,9 +123,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session?.user) {
+        if (session.access_token && typeof window !== 'undefined') {
+          localStorage.setItem('dukan_auth_token', session.access_token);
+        }
         setUser(session.user);
         await fetchProfile(session.user.id, session.user.email);
       } else {
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('dukan_auth_token');
+          localStorage.removeItem('dukan_auth_user');
+        }
         setUser(null);
         setProfile(null);
         setRole(null);
@@ -210,6 +220,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data?.user) {
+        if (data.session?.access_token && typeof window !== 'undefined') {
+          localStorage.setItem('dukan_auth_token', data.session.access_token);
+        }
         const prof = await fetchProfile(data.user.id, data.user.email);
         return { error: null, role: prof.role };
       }
@@ -247,6 +260,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             phone_number: phoneNumber,
             display_email: email || `${phoneNumber}@gmail.com`,
             role: assignedRole,
+            store_name: storeDetails?.storeName || '',
+            category: storeDetails?.category || '',
+            business_offering_type: storeDetails?.offeringType || 'product_selling',
+            address_line: storeDetails?.address || '',
+            city: storeDetails?.city || '',
+            pincode: storeDetails?.pincode || '',
           },
         },
       });
@@ -314,35 +333,59 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       if (data?.user) {
-        // Create record in public.users
+        // Create or update record in public.users
         try {
-          await supabase.from('users').insert({
+          await supabase.from('users').upsert({
             id: data.user.id,
+            email: validAuthEmail,
             phone_number: phoneNumber || `+91-${Math.floor(1000000000 + Math.random() * 9000000000)}`,
             role: assignedRole,
             full_name: fullName,
-          });
+          }, { onConflict: 'id' });
         } catch (e) {
-          console.warn('Users table insert notice:', e);
+          console.warn('Users table upsert notice:', e);
         }
 
-        // If shop owner, create initial store draft
+        // If shop owner, ensure store is created or updated
         if (assignedRole === 'shop_owner' && storeDetails) {
           try {
-            await supabase.from('stores').insert({
-              owner_id: data.user.id,
-              store_name: storeDetails.storeName,
-              category: storeDetails.category,
-              business_offering_type: storeDetails.offeringType || 'product_selling',
-              address_line: storeDetails.address,
-              city: storeDetails.city,
-              pincode: storeDetails.pincode,
-              location: 'POINT(77.2090 28.6139)',
-              verification_status: 'pending',
-              is_live_open: true,
-            });
+            const { data: existingStores } = await supabase
+              .from('stores')
+              .select('id')
+              .eq('owner_id', data.user.id)
+              .limit(1);
+
+            if (!existingStores || existingStores.length === 0) {
+              await supabase.from('stores').insert({
+                owner_id: data.user.id,
+                store_name: storeDetails.storeName,
+                category: storeDetails.category,
+                business_offering_type: storeDetails.offeringType || 'product_selling',
+                address_line: storeDetails.address,
+                city: storeDetails.city,
+                pincode: storeDetails.pincode,
+                latitude: 28.5355,
+                longitude: 77.2090,
+                location: 'POINT(77.2090 28.5355)',
+                phone_contact: phoneNumber,
+                whatsapp_number: phoneNumber,
+                verification_status: 'pending',
+                is_live_open: true,
+              });
+            } else {
+              await supabase.from('stores').update({
+                store_name: storeDetails.storeName,
+                category: storeDetails.category,
+                business_offering_type: storeDetails.offeringType || 'product_selling',
+                address_line: storeDetails.address,
+                city: storeDetails.city,
+                pincode: storeDetails.pincode,
+                phone_contact: phoneNumber,
+                whatsapp_number: phoneNumber,
+              }).eq('id', existingStores[0].id);
+            }
           } catch (e) {
-            console.warn('Stores table insert notice:', e);
+            console.warn('Stores table sync notice:', e);
           }
 
           const storeObj = {
@@ -396,7 +439,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn('Sign out notice:', e);
+    }
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('dukan_auth_token');
+      localStorage.removeItem('dukan_auth_user');
+    }
     setUser(null);
     setProfile(null);
     setRole(null);

@@ -88,7 +88,7 @@ export default function SuperadminPortal() {
     },
   ]);
 
-  const handleVerify = (storeId: string, newStatus: 'verified' | 'rejected') => {
+  const handleVerify = (storeId: string, newStatus: 'verified' | 'rejected' | 'pending') => {
     setStores((prev) =>
       prev.map((s) => (s.id === storeId ? { ...s, status: newStatus } : s))
     );

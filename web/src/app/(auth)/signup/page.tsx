@@ -31,6 +31,7 @@ export type BusinessOfferingType = 'product_selling' | 'service_providing' | 'bo
 function SignupForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const redirectUrl = searchParams.get('redirect');
   const { signUpWithEmail, signInWithGoogle } = useAuth();
 
   const [role, setRole] = useState<UserRole>('customer');
@@ -157,6 +158,11 @@ function SignupForm() {
       return;
     }
 
+    if (redirectUrl) {
+      router.push(redirectUrl);
+      return;
+    }
+
     if (role === 'shop_owner') {
       router.push('/merchant');
     } else {
@@ -205,7 +211,7 @@ function SignupForm() {
             <span className="text-blue-300 hidden sm:inline">|</span>
             <span className="text-blue-100">Existing Member?</span>
             <Link
-              href="/login"
+              href={redirectUrl ? `/login?redirect=${encodeURIComponent(redirectUrl)}` : '/login'}
               className="bg-white text-[#2874f0] hover:bg-slate-100 px-4 py-1.5 rounded-sm font-extrabold shadow-sm transition-all"
             >
               Login
@@ -337,6 +343,13 @@ function SignupForm() {
                 </div>
               </div>
             </div>
+
+            {redirectUrl && (
+              <div className="mb-4 p-3.5 rounded-lg bg-blue-50 border border-blue-200 text-[#1a5bc7] text-xs flex items-center gap-2.5 font-semibold">
+                <Lock className="w-4 h-4 flex-shrink-0 text-[#2874f0]" />
+                <span>Authentication required. Please sign up or log in to message with local stores.</span>
+              </div>
+            )}
 
             {errorMsg && (
               <div className="mb-5 p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2.5">
@@ -753,7 +766,10 @@ function SignupForm() {
             {/* FOOTER LINK */}
             <p className="mt-5 text-center text-xs text-slate-500">
               Already have an account?{' '}
-              <Link href="/login" className="font-black text-[#2874f0] hover:underline">
+              <Link
+                href={redirectUrl ? `/login?redirect=${encodeURIComponent(redirectUrl)}` : '/login'}
+                className="font-black text-[#2874f0] hover:underline"
+              >
                 Sign in to Dukan Bari
               </Link>
             </p>

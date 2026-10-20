@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, Suspense } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth, UserRole } from '@/context/AuthContext';
 import {
   Store,
@@ -22,8 +22,10 @@ import {
   TrendingUp
 } from 'lucide-react';
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirectUrl = searchParams.get('redirect');
   const { signInWithEmail, signInWithGoogle, setMockRole } = useAuth();
 
   const [email, setEmail] = useState('');
@@ -42,6 +44,11 @@ export default function LoginPage() {
     if (error) {
       setErrorMsg(error.message || 'Login failed. Please verify credentials.');
       setLoading(false);
+      return;
+    }
+
+    if (redirectUrl) {
+      router.push(redirectUrl);
       return;
     }
 
@@ -66,6 +73,10 @@ export default function LoginPage() {
 
   const handleQuickDemo = (role: UserRole) => {
     setMockRole(role);
+    if (redirectUrl) {
+      router.push(redirectUrl);
+      return;
+    }
     if (role === 'superadmin') router.push('/admin');
     else if (role === 'shop_owner') router.push('/merchant');
     else router.push('/explore');
@@ -102,7 +113,7 @@ export default function LoginPage() {
             <span className="text-blue-300 hidden sm:inline">|</span>
             <span className="text-blue-100">New to Dukan Bari?</span>
             <Link
-              href="/signup"
+              href={redirectUrl ? `/signup?redirect=${encodeURIComponent(redirectUrl)}` : '/signup'}
               className="bg-[#ffe500] text-[#1a5bc7] hover:bg-[#ebd200] px-4 py-1.5 rounded-sm font-extrabold shadow-sm transition-all"
             >
               Sign Up Free
@@ -200,6 +211,13 @@ export default function LoginPage() {
                 </div>
               </div>
             </div>
+
+            {redirectUrl && (
+              <div className="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-200 text-[#1a5bc7] flex items-center gap-2.5 text-xs font-semibold">
+                <Lock className="w-4 h-4 flex-shrink-0 text-[#2874f0]" />
+                <span>Authentication required. Please log in or sign up to start direct live messaging and store conversations.</span>
+              </div>
+            )}
 
             {errorMsg && (
               <div className="mb-4 p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
@@ -347,7 +365,10 @@ export default function LoginPage() {
 
             <p className="mt-5 text-center text-xs text-slate-500">
               New to Dukan Bari?{' '}
-              <Link href="/signup" className="font-black text-[#2874f0] hover:underline">
+              <Link
+                href={redirectUrl ? `/signup?redirect=${encodeURIComponent(redirectUrl)}` : '/signup'}
+                className="font-black text-[#2874f0] hover:underline"
+              >
                 Create an Account (0% Commission)
               </Link>
             </p>
@@ -356,5 +377,22 @@ export default function LoginPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-[#f1f3f6] flex items-center justify-center p-4">
+          <div className="flex items-center gap-2 text-slate-600 font-bold text-sm">
+            <Loader2 className="w-5 h-5 animate-spin text-[#2874f0]" />
+            <span>Loading login portal...</span>
+          </div>
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }

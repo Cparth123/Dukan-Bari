@@ -35,11 +35,42 @@ import {
   Layers,
   ShoppingBag,
   Briefcase,
-  Save,
   Check,
-  RefreshCw
+  Save,
+  RefreshCw,
+  Calendar,
+  Globe,
+  Navigation
 } from 'lucide-react';
 import { uploadImageToSupabase, SUPABASE_STORE_BUCKET } from '@/lib/storage';
+import {
+  INDIAN_STATES,
+  INDIAN_STATES_DATA,
+  detectStateByCity,
+  reverseGeocodeGPS,
+  formatTo12Hour,
+  formatTo24HourInput
+} from '@/lib/indiaGeoData';
+import {
+  syncStoreToSupabase,
+  getStoreWithProducts,
+  addProductToSupabase,
+  updateProductInSupabase,
+  deleteProductFromSupabase,
+  getStoreOffers,
+  addOfferToSupabase,
+  updateOfferInSupabase,
+  deleteOfferFromSupabase,
+  getCustomerEnquiries,
+  sendEnquiryStockQuote,
+  getStoreConversations,
+  getConversationMessages,
+  sendDirectMessage,
+  playNotificationChime,
+  DbConversation,
+  DbMessage
+} from '@/lib/storeService';
+import { getSocket, joinConversation, sendChatMessage } from '@/lib/socket';
 
 interface ProductItem {
   id: string;
@@ -98,29 +129,48 @@ export default function DukandarPortal() {
   const { profile, signOut } = useAuth();
   const router = useRouter();
 
-  // Active Tab: 'profile' | 'products' | 'offers' | 'enquiries'
-  const [activeTab, setActiveTab] = useState<'profile' | 'products' | 'offers' | 'enquiries'>('profile');
+  // Active Tab: 'profile' | 'products' | 'offers' | 'enquiries' | 'conversations'
+  const [activeTab, setActiveTab] = useState<'profile' | 'products' | 'offers' | 'enquiries' | 'conversations'>('profile');
+
+  // Real-time Conversation & Notifications State
+  const [conversations, setConversations] = useState<DbConversation[]>([]);
+  const [activeConversation, setActiveConversation] = useState<DbConversation | null>(null);
+  const [conversationMessages, setConversationMessages] = useState<DbMessage[]>([]);
+  const [chatMessageText, setChatMessageText] = useState('');
+  const [chatQuotePrice, setChatQuotePrice] = useState<string>('');
+  const [liveAlertNotification, setLiveAlertNotification] = useState<{
+    id: string;
+    title: string;
+    message: string;
+    conversationId?: string;
+  } | null>(null);
 
   // 1-Tap Live Store Toggle (OPEN / CLOSED)
   const [isLiveOpen, setIsLiveOpen] = useState(true);
 
   // Store Profile State (100% Dynamic - starts clean or loads from Supabase/storage)
-  const [storeName, setStoreName] = useState('');
-  const [category, setCategory] = useState('Grocery & Kirana');
+  const [currentStoreId, setCurrentStoreId] = useState<string>('cc5d785f-22d9-4c32-b047-5973a0c7f4d1');
+  const [storeName, setStoreName] = useState('Champion Hair Art');
+  const [category, setCategory] = useState('Hair Saloon & Grooming');
   const [customCategory, setCustomCategory] = useState('');
   const [businessOfferingType, setBusinessOfferingType] = useState<'product_selling' | 'service_providing' | 'both'>('product_selling');
   const [bannerUrl, setBannerUrl] = useState('');
   const [shopPhotoUrl, setShopPhotoUrl] = useState('');
   const [addressLine, setAddressLine] = useState('');
-  const [city, setCity] = useState('');
-  const [state, setState] = useState('');
-  const [pincode, setPincode] = useState('');
-  const [latitude, setLatitude] = useState(28.5355);
-  const [longitude, setLongitude] = useState(77.2090);
+  const [selectedState, setSelectedState] = useState<string>('Gujarat');
+  const [city, setCity] = useState('Surat');
+  const [customCityMode, setCustomCityMode] = useState<boolean>(false);
+  const [pincode, setPincode] = useState('395004');
+  const [latitude, setLatitude] = useState(21.1702);
+  const [longitude, setLongitude] = useState(72.8311);
   const [phoneContact, setPhoneContact] = useState('');
   const [whatsappNumber, setWhatsappNumber] = useState('');
   const [openTime, setOpenTime] = useState('08:30 AM');
   const [closeTime, setCloseTime] = useState('10:00 PM');
+  const [specialScheduleDate, setSpecialScheduleDate] = useState('');
+  const [specialScheduleNote, setSpecialScheduleNote] = useState('');
+  const [isDetectingGPS, setIsDetectingGPS] = useState(false);
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
   const [profileSaved, setProfileSaved] = useState(false);
 
   // Image Uploading States
@@ -160,128 +210,260 @@ export default function DukandarPortal() {
   const [offerFormImage, setOfferFormImage] = useState('');
   const [offerFormIsActive, setOfferFormIsActive] = useState(true);
 
-  // Reverse Enquiry Radar Desk
-  const [enquiries, setEnquiries] = useState<MockEnquiry[]>([
-    {
-      id: 'enq-1',
-      customerName: 'Priya Verma',
-      itemTitle: 'Fortune Sunlite Sunflower Oil 5L Can',
-      description: 'Need urgent counter pickup in 15 mins. Is fresh batch available?',
-      distanceKm: 0.8,
-      timeAgo: '4 mins ago',
-      hasReplied: false,
-    },
-    {
-      id: 'enq-2',
-      customerName: 'Anand Mishra',
-      itemTitle: 'Aashirvaad Shudh Chakki Atta 10kg',
-      description: 'Looking for 10kg pack. What is your discounted price?',
-      distanceKm: 1.4,
-      timeAgo: '12 mins ago',
-      hasReplied: true,
-      quotedPrice: 420,
-    },
-    {
-      id: 'enq-3',
-      customerName: 'Sneha Rao',
-      itemTitle: 'Amul Taaza Milk 1L (4 Packets)',
-      description: 'Are evening delivery packets available right now?',
-      distanceKm: 2.1,
-      timeAgo: '25 mins ago',
-      hasReplied: false,
-    },
-  ]);
+  // Reverse Enquiry Radar Desk (100% Dynamic from Supabase enquiries table)
+  const [enquiries, setEnquiries] = useState<MockEnquiry[]>([]);
   const [replyQuote, setReplyQuote] = useState<{ [key: string]: string }>({});
 
-  // Load saved store from localStorage on mount
+  // Load store, products, offers, enquiries & conversations from Supabase on mount
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const savedStore = localStorage.getItem('dukan_bari_my_store');
-      if (savedStore) {
-        try {
-          const s = JSON.parse(savedStore);
-          if (s.storeName) setStoreName(s.storeName);
-          if (s.category) setCategory(s.category);
-          if (s.businessOfferingType) setBusinessOfferingType(s.businessOfferingType);
-          if (s.bannerUrl) setBannerUrl(s.bannerUrl);
-          if (s.shopPhotoUrl) setShopPhotoUrl(s.shopPhotoUrl);
-          if (s.addressLine) setAddressLine(s.addressLine);
-          if (s.city) setCity(s.city);
-          if (s.state) setState(s.state);
-          if (s.pincode) setPincode(s.pincode);
-          if (s.latitude) setLatitude(s.latitude);
-          if (s.longitude) setLongitude(s.longitude);
-          if (s.phoneContact) setPhoneContact(s.phoneContact);
-          if (s.whatsappNumber) setWhatsappNumber(s.whatsappNumber);
-          if (typeof s.isLiveOpen === 'boolean') setIsLiveOpen(s.isLiveOpen);
-        } catch (e) {
-          console.error('Error loading store from localStorage:', e);
-        }
-      }
+    async function loadMerchantData() {
+      try {
+        const { store: dbStore, products: dbProducts } = await getStoreWithProducts();
+        if (dbStore) {
+          setCurrentStoreId(dbStore.id);
+          setStoreName(dbStore.store_name);
+          setCategory(dbStore.category);
+          setBusinessOfferingType(dbStore.business_offering_type || 'service_providing');
+          if (dbStore.banner_url) setBannerUrl(dbStore.banner_url);
+          if (dbStore.logo_url) setShopPhotoUrl(dbStore.logo_url);
+          if (dbStore.address_line) setAddressLine(dbStore.address_line);
+          if (dbStore.city) {
+            setCity(dbStore.city);
+            const foundState = detectStateByCity(dbStore.city);
+            if (foundState) setSelectedState(foundState);
+          }
+          if (dbStore.pincode) setPincode(dbStore.pincode);
+          if (dbStore.latitude) setLatitude(Number(dbStore.latitude));
+          if (dbStore.longitude) setLongitude(Number(dbStore.longitude));
+          if (dbStore.standard_open_time) setOpenTime(formatTo12Hour(dbStore.standard_open_time));
+          if (dbStore.standard_close_time) setCloseTime(formatTo12Hour(dbStore.standard_close_time));
+          if (dbStore.phone_contact) setPhoneContact(dbStore.phone_contact);
+          if (dbStore.whatsapp_number) setWhatsappNumber(dbStore.whatsapp_number);
+          setIsLiveOpen(dbStore.is_live_open ?? true);
 
-      const savedProducts = localStorage.getItem('dukan_bari_my_products');
-      if (savedProducts) {
-        try {
-          setProducts(JSON.parse(savedProducts));
-        } catch (e) {
-          console.error('Error loading products from localStorage:', e);
-        }
-      }
+          if (dbProducts && dbProducts.length > 0) {
+            setProducts(
+              dbProducts.map((p) => ({
+                id: p.id,
+                name: p.name,
+                itemType: dbStore.business_offering_type === 'service_providing' ? 'service' : 'product',
+                categoryTag: p.category || dbStore.category,
+                price: Number(p.price) || 0,
+                mrp: (Number(p.price) || 0) + (Number(p.discount_price) || 0),
+                unitOrDuration: '1 Unit',
+                description: p.description || '',
+                stockStatusText: p.is_in_stock ? 'In Stock - Ready at Counter' : 'Unavailable',
+                inStock: p.is_in_stock ?? true,
+                image: p.image_url || '/barber-service.jpg'
+              }))
+            );
+          }
 
-      const savedOffers = localStorage.getItem('dukan_bari_my_offers');
-      if (savedOffers) {
-        try {
-          setOffers(JSON.parse(savedOffers));
-        } catch (e) {
-          console.error('Error loading offers from localStorage:', e);
+          // Load Offers from Supabase
+          const dbOffers = await getStoreOffers(dbStore.id);
+          if (dbOffers && dbOffers.length > 0) {
+            setOffers(
+              dbOffers.map((o) => ({
+                id: o.id,
+                title: o.title,
+                discountTag: o.discount_tag || 'FLAT 20% OFF',
+                validUntil: o.valid_until ? new Date(o.valid_until).toLocaleDateString() : 'Valid Today',
+                radiusKm: Number(o.radius_km) || 3.0,
+                bannerImage: o.banner_image || '/barber-service.jpg',
+                isActive: o.is_active ?? true
+              }))
+            );
+          }
+
+          // Load Enquiries from Supabase
+          const { enquiries: dbEnqs, responses: dbResps } = await getCustomerEnquiries(dbStore.id);
+          if (dbEnqs && dbEnqs.length > 0) {
+            setEnquiries(
+              dbEnqs.map((e) => {
+                const myResp = dbResps.find((r: any) => r.enquiry_id === e.id);
+                return {
+                  id: e.id,
+                  customerName: e.users?.full_name || 'Surat Shopper',
+                  itemTitle: e.title,
+                  description: e.description,
+                  distanceKm: Number(e.radius_km) || 1.2,
+                  timeAgo: e.created_at ? new Date(e.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Recently',
+                  hasReplied: !!myResp,
+                  quotedPrice: myResp?.price_quote
+                };
+              })
+            );
+          }
+
+          // Load Conversations from Supabase
+          const dbConvs = await getStoreConversations(dbStore.id);
+          setConversations(dbConvs);
+          if (dbConvs.length > 0 && !activeConversation) {
+            setActiveConversation(dbConvs[0]);
+            const msgs = await getConversationMessages(dbConvs[0].id);
+            setConversationMessages(msgs);
+          }
         }
+
+        // Initialize Socket.io real-time listeners
+        const socket = await getSocket();
+
+        socket.on('receive_message', (msg: any) => {
+          playNotificationChime();
+          setLiveAlertNotification({
+            id: msg.id || `${Date.now()}`,
+            title: `💬 New Message from ${msg.sender_name || 'Customer'}`,
+            message: msg.content || 'Sent an enquiry/order',
+            conversationId: msg.conversation_id
+          });
+
+          // Append to active conversation if open
+          setConversationMessages((prev) => {
+            if (prev.some((m) => m.id === msg.id)) return prev;
+            return [...prev, msg];
+          });
+
+          // Refresh conversations
+          if (dbStore?.id) {
+            getStoreConversations(dbStore.id).then(setConversations);
+          }
+        });
+
+        socket.on('enquiry:new_request', (enq: any) => {
+          playNotificationChime();
+          setLiveAlertNotification({
+            id: `${Date.now()}`,
+            title: '📍 New Customer Reverse Enquiry Broadcast',
+            message: `${enq.title}: ${enq.description || 'Requesting counter rates'}`
+          });
+        });
+      } catch (err) {
+        console.warn('Could not load merchant data from Supabase:', err);
       }
     }
+    loadMerchantData();
   }, []);
 
-  // Sync to localStorage
-  const saveStoreProfile = () => {
-    const storeObj = {
-      storeName,
-      category: category === 'Other / Custom' && customCategory.trim() ? customCategory : category,
-      businessOfferingType,
-      bannerUrl,
-      shopPhotoUrl,
-      addressLine,
+  // Sync to Supabase `stores` table
+  const saveStoreProfile = async () => {
+    const finalCategory = category === 'Other / Custom' && customCategory.trim() ? customCategory : category;
+
+    const saved = await syncStoreToSupabase({
+      id: currentStoreId || undefined,
+      store_name: storeName,
+      category: finalCategory,
+      business_offering_type: businessOfferingType,
+      banner_url: bannerUrl,
+      logo_url: shopPhotoUrl,
+      address_line: addressLine,
       city,
-      state,
       pincode,
       latitude,
       longitude,
-      phoneContact,
-      whatsappNumber,
-      openTime,
-      closeTime,
-      isLiveOpen,
-    };
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('dukan_bari_my_store', JSON.stringify(storeObj));
+      phone_contact: phoneContact,
+      whatsapp_number: whatsappNumber,
+      is_live_open: isLiveOpen,
+      standard_open_time: openTime,
+      standard_close_time: closeTime
+    });
+
+    if (saved) {
+      setCurrentStoreId(saved.id);
+      setLastUploadedBucketMsg(`✓ Store "${saved.store_name}" saved with live GPS (${latitude.toFixed(4)}, ${longitude.toFixed(4)})!`);
+      setTimeout(() => setLastUploadedBucketMsg(''), 5000);
     }
+
     setProfileSaved(true);
     setTimeout(() => setProfileSaved(false), 3000);
   };
 
-  // 1-Click Detect GPS Location
-  const handleDetectGPS = () => {
-    if (typeof window !== 'undefined' && 'geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setLatitude(parseFloat(pos.coords.latitude.toFixed(5)));
-          setLongitude(parseFloat(pos.coords.longitude.toFixed(5)));
-          setLastUploadedBucketMsg(`📍 Live GPS detected: ${pos.coords.latitude.toFixed(4)}°N, ${pos.coords.longitude.toFixed(4)}°E`);
-          setTimeout(() => setLastUploadedBucketMsg(''), 4000);
-        },
-        (err) => {
-          alert(`GPS detection note: ${err.message}. Kept current coordinates.`);
-        },
-        { enableHighAccuracy: true, timeout: 6000 }
-      );
+  // Handler when user selects an Indian State from dropdown
+  const handleStateSelect = (newState: string) => {
+    setSelectedState(newState);
+    setCustomCityMode(false);
+    const cities = INDIAN_STATES_DATA[newState] || [];
+    if (cities.length > 0) {
+      const firstCity = cities[0];
+      setCity(firstCity.name);
+      setPincode(firstCity.pincode);
+      setLatitude(firstCity.latitude);
+      setLongitude(firstCity.longitude);
     }
+  };
+
+  // Handler when user selects a City from the dynamic dropdown
+  const handleCitySelect = (val: string) => {
+    if (val === '__CUSTOM__') {
+      setCustomCityMode(true);
+      return;
+    }
+    setCustomCityMode(false);
+    setCity(val);
+    const cities = INDIAN_STATES_DATA[selectedState] || [];
+    const matched = cities.find((c) => c.name.toLowerCase() === val.toLowerCase());
+    if (matched) {
+      setPincode(matched.pincode);
+      setLatitude(matched.latitude);
+      setLongitude(matched.longitude);
+    }
+  };
+
+  // Real GPS detection handler with reverse-geocoding
+  const handleDetectRealGPS = () => {
+    if (typeof window === 'undefined' || !('geolocation' in navigator)) {
+      alert('Geolocation is not supported by your browser.');
+      return;
+    }
+
+    setIsDetectingGPS(true);
+    setLastUploadedBucketMsg('🛰️ Contacting device GPS sensor for exact coordinates...');
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = parseFloat(pos.coords.latitude.toFixed(6));
+        const lng = parseFloat(pos.coords.longitude.toFixed(6));
+        const accuracyMeters = Math.round(pos.coords.accuracy);
+
+        setLatitude(lat);
+        setLongitude(lng);
+        setGpsAccuracy(accuracyMeters);
+
+        // Reverse geocode to find user's real City, State, Pincode
+        try {
+          const rev = await reverseGeocodeGPS(lat, lng);
+          if (rev.state) {
+            setSelectedState(rev.state);
+          }
+          if (rev.city) {
+            setCity(rev.city);
+          }
+          if (rev.pincode) {
+            setPincode(rev.pincode);
+          }
+          if (rev.addressLine && (!addressLine || addressLine.length < 5)) {
+            setAddressLine(rev.addressLine);
+          }
+          setLastUploadedBucketMsg(
+            `📍 Real Location Locked! ${rev.city || 'Found'} (${lat.toFixed(4)}°N, ${lng.toFixed(4)}°E) ±${accuracyMeters}m`
+          );
+        } catch (e) {
+          setLastUploadedBucketMsg(`📍 Real GPS Coordinates Locked: ${lat}°N, ${lng}°E (±${accuracyMeters}m)`);
+        } finally {
+          setIsDetectingGPS(false);
+          setTimeout(() => setLastUploadedBucketMsg(''), 6000);
+        }
+      },
+      (err) => {
+        setIsDetectingGPS(false);
+        console.warn('Geolocation error:', err);
+        alert(`Location sensor notice (${err.code}): ${err.message}. If permission was blocked, please enable location in browser settings.`);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 0
+      }
+    );
   };
 
   // Image upload handler for Banner
@@ -290,13 +472,24 @@ export default function DukandarPortal() {
     if (!file) return;
 
     setUploadingBanner(true);
-    const res = await uploadImageToSupabase(file, 'banners');
+    const res = await uploadImageToSupabase(file, 'banners', {
+      existingUrl: bannerUrl,
+      customName: currentStoreId ? `store_banner_${currentStoreId}` : undefined,
+    });
     setUploadingBanner(false);
 
     if (res.success && res.url) {
       setBannerUrl(res.url);
-      setLastUploadedBucketMsg(`✓ Banner uploaded to Supabase '${SUPABASE_STORE_BUCKET}' bucket!`);
+      setLastUploadedBucketMsg('✓ Store banner updated successfully!');
       setTimeout(() => setLastUploadedBucketMsg(''), 5000);
+
+      // Auto-save banner_url in database stores table
+      if (currentStoreId) {
+        await syncStoreToSupabase({
+          id: currentStoreId,
+          banner_url: res.url,
+        });
+      }
     } else {
       alert(`Upload notice: ${res.error || 'Failed to upload'}`);
     }
@@ -308,13 +501,24 @@ export default function DukandarPortal() {
     if (!file) return;
 
     setUploadingShopPhoto(true);
-    const res = await uploadImageToSupabase(file, 'stores');
+    const res = await uploadImageToSupabase(file, 'stores', {
+      existingUrl: shopPhotoUrl,
+      customName: currentStoreId ? `store_photo_${currentStoreId}` : undefined,
+    });
     setUploadingShopPhoto(false);
 
     if (res.success && res.url) {
       setShopPhotoUrl(res.url);
-      setLastUploadedBucketMsg(`✓ Shop photo uploaded to Supabase '${SUPABASE_STORE_BUCKET}' bucket!`);
+      setLastUploadedBucketMsg('✓ Shop photo updated successfully!');
       setTimeout(() => setLastUploadedBucketMsg(''), 5000);
+
+      // Auto-save logo_url in database stores table
+      if (currentStoreId) {
+        await syncStoreToSupabase({
+          id: currentStoreId,
+          logo_url: res.url,
+        });
+      }
     } else {
       alert(`Upload notice: ${res.error || 'Failed to upload'}`);
     }
@@ -326,12 +530,15 @@ export default function DukandarPortal() {
     if (!file) return;
 
     setUploadingProductImg(true);
-    const res = await uploadImageToSupabase(file, 'products');
+    const res = await uploadImageToSupabase(file, 'products', {
+      existingUrl: prodFormImage,
+      customName: editingProductId ? `prod_${editingProductId}` : undefined,
+    });
     setUploadingProductImg(false);
 
     if (res.success && res.url) {
       setProdFormImage(res.url);
-      setLastUploadedBucketMsg(`✓ Product image stored in Supabase '${SUPABASE_STORE_BUCKET}' bucket!`);
+      setLastUploadedBucketMsg('✓ Product image updated successfully!');
       setTimeout(() => setLastUploadedBucketMsg(''), 5000);
     } else {
       alert(`Upload notice: ${res.error || 'Failed to upload'}`);
@@ -344,12 +551,15 @@ export default function DukandarPortal() {
     if (!file) return;
 
     setUploadingOfferImg(true);
-    const res = await uploadImageToSupabase(file, 'offers');
+    const res = await uploadImageToSupabase(file, 'offers', {
+      existingUrl: offerFormImage,
+      customName: editingOfferId ? `offer_${editingOfferId}` : undefined,
+    });
     setUploadingOfferImg(false);
 
     if (res.success && res.url) {
       setOfferFormImage(res.url);
-      setLastUploadedBucketMsg(`✓ Deal banner stored in Supabase '${SUPABASE_STORE_BUCKET}' bucket!`);
+      setLastUploadedBucketMsg('✓ Deal banner updated successfully!');
       setTimeout(() => setLastUploadedBucketMsg(''), 5000);
     } else {
       alert(`Upload notice: ${res.error || 'Failed to upload'}`);
@@ -387,71 +597,106 @@ export default function DukandarPortal() {
     setShowProductModal(true);
   };
 
-  const handleSaveProduct = (e: React.FormEvent) => {
+  const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!prodFormName.trim()) return;
 
-    let updatedProducts: ProductItem[];
-    if (editingProductId) {
-      updatedProducts = products.map((p) =>
-        p.id === editingProductId
-          ? {
-              ...p,
-              name: prodFormName,
-              itemType: prodFormType,
-              categoryTag: prodFormTag || category,
-              price: Number(prodFormPrice),
-              mrp: Number(prodFormMrp) || Number(prodFormPrice),
-              unitOrDuration: prodFormUnit || '1 Unit',
-              description: prodFormDesc,
-              stockStatusText: prodFormStockStatus,
-              inStock: prodFormInStock,
-              image: prodFormImage,
-            }
-          : p
-      );
-    } else {
-      const newProd: ProductItem = {
-        id: `prod-${Date.now()}`,
-        name: prodFormName,
-        itemType: prodFormType,
-        categoryTag: prodFormTag || category,
-        price: Number(prodFormPrice),
-        mrp: Number(prodFormMrp) || Number(prodFormPrice),
-        unitOrDuration: prodFormUnit || '1 Unit',
+    const price = Number(prodFormPrice) || 0;
+    const mrp = Number(prodFormMrp) || price;
+    const discountAmt = mrp > price ? mrp - price : 0;
+
+    if (editingProductId && editingProductId.length > 20) {
+      // Update in Supabase
+      const updated = await updateProductInSupabase({
+        id: editingProductId,
+        name: prodFormName.trim(),
+        price,
+        discount_price: discountAmt,
+        category: prodFormTag || category,
         description: prodFormDesc,
-        stockStatusText: prodFormStockStatus,
-        inStock: prodFormInStock,
-        image: prodFormImage,
-      };
-      updatedProducts = [newProd, ...products];
+        image_url: prodFormImage,
+        is_in_stock: prodFormInStock
+      });
+
+      if (updated) {
+        setProducts((prev) =>
+          prev.map((p) =>
+            p.id === editingProductId
+              ? {
+                  ...p,
+                  name: updated.name,
+                  itemType: prodFormType,
+                  categoryTag: updated.category || category,
+                  price: Number(updated.price),
+                  mrp,
+                  unitOrDuration: prodFormUnit || '1 Unit',
+                  description: updated.description || '',
+                  stockStatusText: prodFormStockStatus,
+                  inStock: updated.is_in_stock ?? true,
+                  image: updated.image_url || '/barber-service.jpg'
+                }
+              : p
+          )
+        );
+      }
+    } else {
+      // Insert into Supabase
+      const inserted = await addProductToSupabase({
+        store_id: currentStoreId,
+        name: prodFormName.trim(),
+        price,
+        discount_price: discountAmt,
+        category: prodFormTag || category,
+        description: prodFormDesc,
+        image_url: prodFormImage,
+        is_in_stock: prodFormInStock
+      });
+
+      if (inserted) {
+        const newProd: ProductItem = {
+          id: inserted.id,
+          name: inserted.name,
+          itemType: prodFormType,
+          categoryTag: inserted.category || category,
+          price: Number(inserted.price),
+          mrp,
+          unitOrDuration: prodFormUnit || '1 Unit',
+          description: inserted.description || '',
+          stockStatusText: prodFormStockStatus,
+          inStock: inserted.is_in_stock ?? true,
+          image: inserted.image_url || '/barber-service.jpg'
+        };
+        setProducts((prev) => [newProd, ...prev]);
+      }
     }
 
-    setProducts(updatedProducts);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('dukan_bari_my_products', JSON.stringify(updatedProducts));
-    }
     setShowProductModal(false);
   };
 
-  const handleDeleteProduct = (id: string) => {
-    if (confirm('Are you sure you want to delete this product/service?')) {
-      const filtered = products.filter((p) => p.id !== id);
-      setProducts(filtered);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('dukan_bari_my_products', JSON.stringify(filtered));
+  const handleDeleteProduct = async (id: string) => {
+    const prodToDelete = products.find((p) => p.id === id);
+    const prodName = prodToDelete?.name || 'this item';
+
+    if (confirm(`Are you sure you want to delete "${prodName}"?\n\nThis will remove the item from your store catalog.`)) {
+      const success = await deleteProductFromSupabase(id);
+      if (success) {
+        setProducts((prev) => prev.filter((p) => p.id !== id));
+        setLastUploadedBucketMsg(`✓ "${prodName}" removed from store catalog.`);
+        setTimeout(() => setLastUploadedBucketMsg(''), 5000);
+      } else {
+        alert('Could not delete product. Please try again.');
       }
     }
   };
 
-  // Offer CRUD
+  // Offer CRUD (Sync to Supabase announcements_and_offers table)
   const handleOpenAddOffer = () => {
     setEditingOfferId(null);
     setOfferFormTitle('');
-    setOfferFormDiscountTag('FLAT 20% OFF');
-    setOfferFormValidUntil('8:00 PM Tonight');
-    setOfferFormRadiusKm(3.0);
-    setOfferFormImage('/dhaba-thali.jpg');
+    setOfferFormDiscountTag('FLAT 25% OFF');
+    setOfferFormValidUntil('Valid for 7 Days');
+    setOfferFormRadiusKm(3.5);
+    setOfferFormImage('/barber-service.jpg');
     setOfferFormIsActive(true);
     setShowOfferModal(true);
   };
@@ -467,64 +712,159 @@ export default function DukandarPortal() {
     setShowOfferModal(true);
   };
 
-  const handleSaveOffer = (e: React.FormEvent) => {
+  const handleSaveOffer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!offerFormTitle.trim()) return;
 
-    let updatedOffers: OfferItem[];
-    if (editingOfferId) {
-      updatedOffers = offers.map((o) =>
-        o.id === editingOfferId
-          ? {
-              ...o,
-              title: offerFormTitle,
-              discountTag: offerFormDiscountTag,
-              validUntil: offerFormValidUntil,
-              radiusKm: Number(offerFormRadiusKm),
-              bannerImage: offerFormImage,
-              isActive: offerFormIsActive,
-            }
-          : o
-      );
+    if (editingOfferId && editingOfferId.length > 20) {
+      const updated = await updateOfferInSupabase({
+        id: editingOfferId,
+        title: offerFormTitle.trim(),
+        discount_tag: offerFormDiscountTag,
+        banner_image: offerFormImage,
+        radius_km: Number(offerFormRadiusKm),
+        is_active: offerFormIsActive
+      });
+
+      if (updated) {
+        setOffers((prev) =>
+          prev.map((o) =>
+            o.id === editingOfferId
+              ? {
+                  ...o,
+                  title: updated.title,
+                  discountTag: updated.discount_tag,
+                  bannerImage: updated.banner_image,
+                  radiusKm: Number(updated.radius_km),
+                  isActive: updated.is_active
+                }
+              : o
+          )
+        );
+        setLastUploadedBucketMsg('✓ Deal updated successfully!');
+        setTimeout(() => setLastUploadedBucketMsg(''), 4000);
+      }
     } else {
-      const newOffer: OfferItem = {
-        id: `offer-${Date.now()}`,
-        title: offerFormTitle,
-        discountTag: offerFormDiscountTag,
-        validUntil: offerFormValidUntil,
-        radiusKm: Number(offerFormRadiusKm),
-        bannerImage: offerFormImage,
-        isActive: offerFormIsActive,
-      };
-      updatedOffers = [newOffer, ...offers];
+      const inserted = await addOfferToSupabase({
+        store_id: currentStoreId,
+        title: offerFormTitle.trim(),
+        description: 'Neighborhood Special Deal',
+        discount_tag: offerFormDiscountTag,
+        banner_image: offerFormImage,
+        radius_km: Number(offerFormRadiusKm),
+        is_active: offerFormIsActive
+      });
+
+      if (inserted) {
+        const newOffer: OfferItem = {
+          id: inserted.id,
+          title: inserted.title,
+          discountTag: inserted.discount_tag,
+          validUntil: offerFormValidUntil,
+          radiusKm: Number(inserted.radius_km),
+          bannerImage: inserted.banner_image,
+          isActive: inserted.is_active
+        };
+        setOffers((prev) => [newOffer, ...prev]);
+        setLastUploadedBucketMsg('✓ New deal published successfully!');
+        setTimeout(() => setLastUploadedBucketMsg(''), 4000);
+      }
     }
 
-    setOffers(updatedOffers);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('dukan_bari_my_offers', JSON.stringify(updatedOffers));
-    }
     setShowOfferModal(false);
   };
 
-  const handleDeleteOffer = (id: string) => {
-    if (confirm('Are you sure you want to delete this offer?')) {
-      const filtered = offers.filter((o) => o.id !== id);
-      setOffers(filtered);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('dukan_bari_my_offers', JSON.stringify(filtered));
+  const handleDeleteOffer = async (id: string) => {
+    const offerToDelete = offers.find((o) => o.id === id);
+    const offerTitle = offerToDelete?.title || 'this offer';
+
+    if (confirm(`Are you sure you want to delete "${offerTitle}"?\n\nThis will remove the deal and promotional banner.`)) {
+      const success = await deleteOfferFromSupabase(id);
+      if (success) {
+        setOffers((prev) => prev.filter((o) => o.id !== id));
+        setLastUploadedBucketMsg(`✓ "${offerTitle}" was removed successfully.`);
+        setTimeout(() => setLastUploadedBucketMsg(''), 5000);
+      } else {
+        alert('Could not delete offer. Please try again.');
       }
     }
   };
 
-  const handleReplyEnquiry = (enquiryId: string) => {
+  const handleToggleOfferActive = async (offer: OfferItem) => {
+    const nextStatus = !offer.isActive;
+    await updateOfferInSupabase({ id: offer.id, is_active: nextStatus });
+    setOffers((prev) => prev.map((o) => (o.id === offer.id ? { ...o, isActive: nextStatus } : o)));
+  };
+
+  // Reply to Customer Reverse Enquiry (Sync to Supabase & Notify)
+  const handleReplyEnquiry = async (enquiryId: string) => {
     const price = parseFloat(replyQuote[enquiryId] || '0');
-    setEnquiries((prev) =>
-      prev.map((e) =>
-        e.id === enquiryId
-          ? { ...e, hasReplied: true, quotedPrice: price > 0 ? price : 250 }
-          : e
-      )
-    );
+    if (!price || price <= 0) {
+      alert('Please enter a valid price quote in ₹');
+      return;
+    }
+
+    const ok = await sendEnquiryStockQuote({
+      enquiry_id: enquiryId,
+      store_id: currentStoreId,
+      price_quote: price,
+      note: 'Stock confirmed by store counter'
+    });
+
+    if (ok) {
+      setEnquiries((prev) =>
+        prev.map((e) =>
+          e.id === enquiryId
+            ? { ...e, hasReplied: true, quotedPrice: price }
+            : e
+        )
+      );
+      setLastUploadedBucketMsg(`✓ Price quote of ₹${price} sent to customer!`);
+      setTimeout(() => setLastUploadedBucketMsg(''), 4000);
+    }
+  };
+
+  // Select conversation to view messages
+  const handleSelectConversation = async (conv: DbConversation) => {
+    setActiveConversation(conv);
+    const msgs = await getConversationMessages(conv.id);
+    setConversationMessages(msgs);
+    await joinConversation(conv.id);
+  };
+
+  // Send message from merchant to customer
+  const handleSendMerchantMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeConversation || (!chatMessageText.trim() && !chatQuotePrice)) return;
+
+    let content = chatMessageText.trim();
+    let msgType = 'text';
+    let metadata: any = {};
+
+    if (chatQuotePrice && Number(chatQuotePrice) > 0) {
+      msgType = 'price_quote';
+      metadata = { quoted_price: Number(chatQuotePrice) };
+      content = content || `Counter Price Quote: ₹${chatQuotePrice}`;
+    }
+
+    const newMsg = await sendDirectMessage({
+      conversation_id: activeConversation.id,
+      content,
+      message_type: msgType,
+      metadata
+    });
+
+    if (newMsg) {
+      setConversationMessages((prev) => [...prev, newMsg]);
+      setChatMessageText('');
+      setChatQuotePrice('');
+      await sendChatMessage({
+        conversationId: activeConversation.id,
+        content,
+        messageType: msgType as any,
+        metadata
+      });
+    }
   };
 
   return (
@@ -545,15 +885,16 @@ export default function DukandarPortal() {
               </div>
             </Link>
 
-            <span className="hidden sm:inline-block px-2.5 py-0.5 rounded-full bg-white/20 text-white text-[10px] font-bold border border-white/20">
-              Supabase Storage: <code className="text-[#ffe500] font-mono">Store</code> Bucket
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-100 text-[10px] font-bold border border-emerald-400/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>Merchant Cloud Active</span>
             </span>
           </div>
 
           <div className="flex items-center gap-2 sm:gap-4">
-            {/* View Live Storefront Button */}
+            {/* View Live Storefront Button (Links directly to dynamic Supabase store) */}
             <Link
-              href="/store/store-1"
+              href={currentStoreId ? `/store/${currentStoreId}` : '/store/my-store'}
               target="_blank"
               className="bg-white/15 hover:bg-white/25 text-white text-xs font-bold px-3 py-1.5 rounded-sm flex items-center gap-1.5 transition-colors border border-white/20"
               title="Open public customer view of this store"
@@ -563,16 +904,15 @@ export default function DukandarPortal() {
               <ExternalLink className="w-3 h-3 opacity-70" />
             </Link>
 
-            {/* Live Open / Closed 1-Tap Toggle */}
+            {/* Live Open / Closed 1-Tap Toggle (Syncs to Supabase) */}
             <button
-              onClick={() => {
+              onClick={async () => {
                 const nextStatus = !isLiveOpen;
                 setIsLiveOpen(nextStatus);
-                if (typeof window !== 'undefined') {
-                  const saved = localStorage.getItem('dukan_bari_my_store');
-                  const current = saved ? JSON.parse(saved) : {};
-                  localStorage.setItem('dukan_bari_my_store', JSON.stringify({ ...current, isLiveOpen: nextStatus }));
-                }
+                await syncStoreToSupabase({
+                  id: currentStoreId,
+                  is_live_open: nextStatus
+                });
               }}
               className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-extrabold transition-all shadow-sm ${
                 isLiveOpen
@@ -610,6 +950,45 @@ export default function DukandarPortal() {
             <button onClick={() => setLastUploadedBucketMsg('')} className="text-white hover:opacity-80">
               <X className="w-4 h-4" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Real-time Socket Audio Alert & Notification Banner */}
+      {liveAlertNotification && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-3">
+          <div className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white px-5 py-3 rounded-xl text-xs font-bold shadow-xl flex items-center justify-between animate-fadeInUp border border-blue-400/30">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-white/20 flex items-center justify-center flex-shrink-0 animate-bounce">
+                <Bell className="w-5 h-5 text-[#ffe500]" />
+              </div>
+              <div>
+                <div className="text-sm font-black text-white">{liveAlertNotification.title}</div>
+                <div className="text-xs text-blue-100 mt-0.5">{liveAlertNotification.message}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setActiveTab('conversations');
+                  if (liveAlertNotification.conversationId) {
+                    const target = conversations.find((c) => c.id === liveAlertNotification.conversationId);
+                    if (target) handleSelectConversation(target);
+                  }
+                  setLiveAlertNotification(null);
+                }}
+                className="bg-[#ffe500] hover:bg-amber-300 text-slate-900 text-xs font-black px-3.5 py-1.5 rounded-md shadow transition-colors flex items-center gap-1.5"
+              >
+                <span>Open Live Chat</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setLiveAlertNotification(null)}
+                className="text-white/80 hover:text-white p-1 rounded-md"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -664,6 +1043,21 @@ export default function DukandarPortal() {
           >
             <MessageSquare className="w-4 h-4" />
             <span>4. Customer Enquiries Radar ({enquiries.length})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('conversations')}
+            className={`flex-1 min-w-[140px] py-2.5 px-4 rounded-lg text-xs font-black flex items-center justify-center gap-2 transition-all relative ${
+              activeTab === 'conversations'
+                ? 'bg-[#2874f0] text-white shadow-xs'
+                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+            <span>5. Live Customer Chats ({conversations.length})</span>
+            {conversations.some((c) => (c.unread_count_merchant || 0) > 0) && (
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping absolute top-2 right-2" />
+            )}
           </button>
         </div>
 
@@ -879,74 +1273,256 @@ export default function DukandarPortal() {
                     />
                   </div>
 
-                  {/* Opening and Closing Hours */}
-                  <div>
-                    <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
-                      Standard Working Hours
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="text"
-                        value={openTime}
-                        onChange={(e) => setOpenTime(e.target.value)}
-                        placeholder="Open: 08:30 AM"
-                        className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 font-bold focus:outline-none focus:border-[#2874f0] focus:bg-white"
-                      />
-                      <input
-                        type="text"
-                        value={closeTime}
-                        onChange={(e) => setCloseTime(e.target.value)}
-                        placeholder="Close: 10:00 PM"
-                        className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 font-bold focus:outline-none focus:border-[#2874f0] focus:bg-white"
-                      />
+                  {/* Standard Working Hours & Schedule Date Picker */}
+                  <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-3.5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-[#2874f0]" />
+                        <span>Daily Store Working Hours</span>
+                      </label>
+                      <span className="text-[10px] font-bold text-slate-600 bg-white border border-slate-200 px-2.5 py-0.5 rounded-full shadow-xs">
+                        {openTime} – {closeTime}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <span className="text-[11px] font-bold text-slate-600 block mb-1">
+                          Opening Time (Counter Opens)
+                        </span>
+                        <input
+                          type="time"
+                          value={formatTo24HourInput(openTime)}
+                          onChange={(e) => setOpenTime(formatTo12Hour(e.target.value))}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 font-black focus:outline-none focus:border-[#2874f0] shadow-xs cursor-pointer"
+                        />
+                      </div>
+
+                      <div>
+                        <span className="text-[11px] font-bold text-slate-600 block mb-1">
+                          Closing Time (Counter Closes)
+                        </span>
+                        <input
+                          type="time"
+                          value={formatTo24HourInput(closeTime)}
+                          onChange={(e) => setCloseTime(formatTo12Hour(e.target.value))}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 font-black focus:outline-none focus:border-[#2874f0] shadow-xs cursor-pointer"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Quick Preset Buttons */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Presets:</span>
+                      {[
+                        { label: '8:30 AM - 10 PM', o: '08:30 AM', c: '10:00 PM' },
+                        { label: '9:00 AM - 9 PM', o: '09:00 AM', c: '09:00 PM' },
+                        { label: '10:00 AM - 8 PM', o: '10:00 AM', c: '08:00 PM' },
+                        { label: '24 Hours Open', o: '12:00 AM', c: '11:59 PM' },
+                      ].map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => {
+                            setOpenTime(preset.o);
+                            setCloseTime(preset.c);
+                          }}
+                          className={`text-[11px] font-bold px-2 py-0.5 rounded border transition-colors ${
+                            openTime === preset.o && closeTime === preset.c
+                              ? 'bg-[#2874f0] text-white border-[#2874f0]'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Special Schedule / Holiday Date Picker */}
+                    <div className="border-t border-slate-200 pt-2.5 mt-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[11px] font-black text-slate-700 flex items-center gap-1">
+                          <Calendar className="w-3.5 h-3.5 text-amber-500" />
+                          <span>Special Operating Date / Festive Schedule (Date Picker)</span>
+                        </label>
+                        {specialScheduleDate && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSpecialScheduleDate('');
+                              setSpecialScheduleNote('');
+                            }}
+                            className="text-[10px] text-red-500 hover:underline font-bold"
+                          >
+                            Clear Date
+                          </button>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <input
+                          type="date"
+                          value={specialScheduleDate}
+                          onChange={(e) => setSpecialScheduleDate(e.target.value)}
+                          className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs text-slate-800 font-bold focus:outline-none focus:border-[#2874f0] shadow-xs cursor-pointer"
+                        />
+                        <input
+                          type="text"
+                          value={specialScheduleNote}
+                          onChange={(e) => setSpecialScheduleNote(e.target.value)}
+                          placeholder="e.g. Diwali Timing (10 AM - 2 PM) or Closed"
+                          className="bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-[#2874f0] shadow-xs"
+                        />
+                      </div>
                     </div>
                   </div>
 
-                  {/* Pincode & City */}
-                  <div>
-                    <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
-                      City & Pincode *
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <input
-                        type="text"
-                        value={city}
-                        onChange={(e) => setCity(e.target.value)}
-                        placeholder="City"
-                        className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 font-bold focus:outline-none focus:border-[#2874f0] focus:bg-white"
-                      />
-                      <input
-                        type="text"
-                        value={pincode}
-                        onChange={(e) => setPincode(e.target.value)}
-                        placeholder="Pincode (e.g. 110017)"
-                        className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 font-bold focus:outline-none focus:border-[#2874f0] focus:bg-white"
-                      />
+                  {/* State, Dynamic City Dropdown & Pincode */}
+                  <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-3.5 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <Globe className="w-3.5 h-3.5 text-[#2874f0]" />
+                        <span>State, City & Pincode *</span>
+                      </label>
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                        Dynamic City & Pincode Sync
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                      {/* State Dropdown */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          Select State *
+                        </label>
+                        <select
+                          value={selectedState}
+                          onChange={(e) => handleStateSelect(e.target.value)}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 font-bold focus:outline-none focus:border-[#2874f0] shadow-xs cursor-pointer"
+                        >
+                          {INDIAN_STATES.map((st) => (
+                            <option key={st} value={st}>
+                              {st}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Dynamic City Dropdown */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-[11px] font-bold text-slate-600">
+                            Select City ({selectedState}) *
+                          </label>
+                          {customCityMode && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCustomCityMode(false);
+                                const cities = INDIAN_STATES_DATA[selectedState] || [];
+                                if (cities.length > 0) handleCitySelect(cities[0].name);
+                              }}
+                              className="text-[10px] text-[#2874f0] font-bold hover:underline"
+                            >
+                              Show List
+                            </button>
+                          )}
+                        </div>
+
+                        {!customCityMode ? (
+                          <select
+                            value={city}
+                            onChange={(e) => handleCitySelect(e.target.value)}
+                            className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 font-bold focus:outline-none focus:border-[#2874f0] shadow-xs cursor-pointer"
+                          >
+                            {(INDIAN_STATES_DATA[selectedState] || []).map((c) => (
+                              <option key={c.name} value={c.name}>
+                                {c.name} (Pin: {c.pincode})
+                              </option>
+                            ))}
+                            <option value="__CUSTOM__">✨ Other / Enter Custom City...</option>
+                          </select>
+                        ) : (
+                          <div className="relative">
+                            <input
+                              type="text"
+                              value={city}
+                              onChange={(e) => setCity(e.target.value)}
+                              placeholder="Type City or Town Name"
+                              className="w-full bg-white border border-[#2874f0] rounded-lg px-3 py-2 text-xs text-slate-900 font-bold focus:outline-none shadow-xs"
+                              autoFocus
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Pincode Input */}
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                          6-Digit Pincode *
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={6}
+                          value={pincode}
+                          onChange={(e) => setPincode(e.target.value.replace(/\D/g, ''))}
+                          placeholder="e.g. 395004"
+                          className="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 text-xs text-slate-900 font-mono font-bold focus:outline-none focus:border-[#2874f0] shadow-xs"
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
 
                 {/* Location & GPS Section */}
                 <div className="border-t border-slate-100 pt-5 space-y-3">
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-gradient-to-r from-blue-50/70 via-indigo-50/40 to-slate-50 border border-blue-100 p-3.5 rounded-xl">
                     <div>
                       <h3 className="text-sm font-black text-slate-900 flex items-center gap-1.5">
-                        <MapPin className="w-4 h-4 text-[#2874f0]" />
+                        <Navigation className="w-4 h-4 text-[#2874f0]" />
                         <span>Store Physical Address & GPS Radar Coordinates</span>
                       </h3>
-                      <p className="text-xs text-slate-500">
-                        Exact coordinates pin your store on the Google Maps Radar so nearby customers discover you.
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Get device real GPS location to automatically set latitude & longitude for customer radar discovery.
                       </p>
+                      {gpsAccuracy !== null && (
+                        <div className="mt-1 flex items-center gap-2 text-[11px] font-bold text-emerald-700">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                          <span>GPS Sensor Locked: ±{gpsAccuracy}m precision</span>
+                        </div>
+                      )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={handleDetectGPS}
-                      className="bg-blue-50 hover:bg-blue-100 text-[#2874f0] border border-blue-200 px-3.5 py-1.5 rounded-lg text-xs font-extrabold flex items-center gap-1.5 transition-colors"
-                    >
-                      <LocateFixed className="w-3.5 h-3.5" />
-                      <span>Detect My Current GPS Location</span>
-                    </button>
+                    <div className="flex items-center gap-2 w-full sm:w-auto">
+                      <button
+                        type="button"
+                        onClick={handleDetectRealGPS}
+                        disabled={isDetectingGPS}
+                        className="flex-1 sm:flex-initial bg-[#2874f0] hover:bg-[#1b5ec2] text-white px-4 py-2 rounded-lg text-xs font-black flex items-center justify-center gap-2 shadow-xs transition-all disabled:opacity-70 cursor-pointer"
+                      >
+                        {isDetectingGPS ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Locating Device...</span>
+                          </>
+                        ) : (
+                          <>
+                            <LocateFixed className="w-4 h-4" />
+                            <span>Get Real GPS Location</span>
+                          </>
+                        )}
+                      </button>
+
+                      <a
+                        href={`https://www.google.com/maps?q=${latitude},${longitude}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs"
+                        title="View pin on Google Maps"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
+                        <span className="hidden sm:inline">Map</span>
+                      </a>
+                    </div>
                   </div>
 
                   <div>
@@ -964,27 +1540,33 @@ export default function DukandarPortal() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-[11px] font-black text-slate-600 mb-1">
-                        Latitude (Lat)
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-[11px] font-black text-slate-600">
+                          Latitude (Lat)
+                        </label>
+                        <span className="text-[10px] text-slate-400 font-mono">Degrees N</span>
+                      </div>
                       <input
                         type="number"
                         step="any"
                         value={latitude}
-                        onChange={(e) => setLatitude(parseFloat(e.target.value))}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono font-bold text-slate-900"
+                        onChange={(e) => setLatitude(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-[#2874f0] focus:bg-white"
                       />
                     </div>
                     <div>
-                      <label className="block text-[11px] font-black text-slate-600 mb-1">
-                        Longitude (Lng)
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-[11px] font-black text-slate-600">
+                          Longitude (Lng)
+                        </label>
+                        <span className="text-[10px] text-slate-400 font-mono">Degrees E</span>
+                      </div>
                       <input
                         type="number"
                         step="any"
                         value={longitude}
-                        onChange={(e) => setLongitude(parseFloat(e.target.value))}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono font-bold text-slate-900"
+                        onChange={(e) => setLongitude(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-[#2874f0] focus:bg-white"
                       />
                     </div>
                   </div>
@@ -1280,56 +1862,289 @@ export default function DukandarPortal() {
                 </div>
               </div>
 
-              <div className="space-y-4">
-                {enquiries.map((enq) => (
-                  <div
-                    key={enq.id}
-                    className="border border-slate-200 rounded-xl p-4 bg-[#f8fafc] hover:bg-white transition-all shadow-2xs"
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                        <h4 className="text-sm font-black text-slate-900">{enq.itemTitle}</h4>
-                        <span className="text-[10px] bg-blue-50 text-[#2874f0] font-bold px-2 py-0.5 rounded border border-blue-100">
-                          {enq.distanceKm} km away
-                        </span>
+              {enquiries.length === 0 ? (
+                <div className="text-center py-16 px-4 bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
+                  <div className="w-14 h-14 rounded-2xl bg-blue-50 text-[#2874f0] flex items-center justify-center mx-auto mb-3">
+                    <MessageSquare className="w-7 h-7" />
+                  </div>
+                  <h3 className="text-base font-black text-slate-900">No Active Reverse Enquiries in Radar</h3>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
+                    Nearby shoppers broadcasted product requirements will appear here in real-time. When a customer broadcasts within 3km, you will receive an instant notification chime.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {enquiries.map((enq) => (
+                    <div
+                      key={enq.id}
+                      className="border border-slate-200 rounded-xl p-4 bg-[#f8fafc] hover:bg-white transition-all shadow-2xs"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                          <h4 className="text-sm font-black text-slate-900">{enq.itemTitle}</h4>
+                          <span className="text-[10px] bg-blue-50 text-[#2874f0] font-bold px-2 py-0.5 rounded border border-blue-100">
+                            {enq.distanceKm} km away
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-400 font-semibold">{enq.timeAgo}</span>
                       </div>
-                      <span className="text-[11px] text-slate-400 font-semibold">{enq.timeAgo}</span>
+
+                      <p className="text-xs text-slate-600 mb-3">{enq.description}</p>
+
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-200/80">
+                        <div className="text-xs font-bold text-slate-700">
+                          Customer: <span className="text-slate-900">{enq.customerName}</span>
+                        </div>
+
+                        {enq.hasReplied ? (
+                          <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
+                            <CheckCircle className="w-4 h-4 text-emerald-600" />
+                            <span>Quote Sent: ₹{enq.quotedPrice} (Customer Notified)</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              placeholder="Price Quote (₹)"
+                              value={replyQuote[enq.id] || ''}
+                              onChange={(e) => setReplyQuote({ ...replyQuote, [enq.id]: e.target.value })}
+                              className="w-32 bg-white border border-slate-300 rounded px-2.5 py-1 text-xs font-bold text-slate-900 focus:outline-none focus:border-[#2874f0]"
+                            />
+                            <button
+                              onClick={() => handleReplyEnquiry(enq.id)}
+                              className="bg-[#2874f0] hover:bg-[#1759c9] text-white text-xs font-black px-3.5 py-1.5 rounded shadow-xs flex items-center gap-1 transition-colors"
+                            >
+                              <Send className="w-3 h-3" />
+                              <span>Confirm Stock & Quote</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* TAB 5: LIVE CUSTOMER CHATS & REAL-TIME SOCKET MESSAGING */}
+        {/* ========================================================= */}
+        {activeTab === 'conversations' && (
+          <div className="bg-white rounded-2xl shadow-xs border border-slate-200 overflow-hidden">
+            <div className="grid grid-cols-1 md:grid-cols-12 min-h-[580px]">
+              {/* Left Pane: Conversation List */}
+              <div className="md:col-span-4 border-r border-slate-200 bg-slate-50/50 flex flex-col">
+                <div className="p-4 border-b border-slate-200 bg-white">
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="text-sm font-black text-slate-900 flex items-center gap-2">
+                      <MessageSquare className="w-4 h-4 text-[#2874f0]" />
+                      <span>Live Customer Chats</span>
+                    </h3>
+                    <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-blue-100 text-[#2874f0]">
+                      {conversations.length} Active
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Real-time shopper enquiries & direct store counter negotiations.
+                  </p>
+                </div>
+
+                <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+                  {conversations.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400">
+                      <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                      <p className="text-xs font-bold text-slate-600">No active conversations yet</p>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        When shoppers message your storefront, they appear here live.
+                      </p>
+                    </div>
+                  ) : (
+                    conversations.map((conv) => {
+                      const isSelected = activeConversation?.id === conv.id;
+                      const customerTitle = conv.users?.full_name || 'Customer Shopper';
+                      const customerPhone = conv.users?.phone_number || '';
+                      return (
+                        <button
+                          key={conv.id}
+                          onClick={() => handleSelectConversation(conv)}
+                          className={`w-full text-left p-3.5 flex items-start gap-3 transition-colors ${
+                            isSelected
+                              ? 'bg-blue-50/80 border-l-4 border-l-[#2874f0]'
+                              : 'hover:bg-slate-100/70 border-l-4 border-l-transparent'
+                          }`}
+                        >
+                          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#2874f0] to-blue-400 text-white font-black text-sm flex items-center justify-center flex-shrink-0 shadow-xs">
+                            {customerTitle.charAt(0).toUpperCase()}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1 mb-0.5">
+                              <h4 className="text-xs font-black text-slate-900 truncate">
+                                {customerTitle}
+                              </h4>
+                              {conv.last_message_at && (
+                                <span className="text-[10px] text-slate-400 font-semibold whitespace-nowrap">
+                                  {new Date(conv.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              )}
+                            </div>
+                            {customerPhone && (
+                              <p className="text-[10px] text-slate-400 font-medium truncate mb-1">
+                                📞 {customerPhone}
+                              </p>
+                            )}
+                            <p className="text-xs text-slate-600 truncate font-medium">
+                              {conv.last_message || 'Started a conversation'}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Right Pane: Active Chat Room */}
+              <div className="md:col-span-8 flex flex-col bg-white">
+                {activeConversation ? (
+                  <>
+                    {/* Chat Room Top Bar */}
+                    <div className="p-3.5 border-b border-slate-200 flex items-center justify-between bg-white sticky top-0 z-10">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-[#2874f0] text-white font-black text-xs flex items-center justify-center shadow-xs">
+                          {(activeConversation.users?.full_name || 'C').charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-sm font-black text-slate-900">
+                              {activeConversation.users?.full_name || 'Shopper Customer'}
+                            </h4>
+                            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                            <span className="text-[10px] font-bold text-emerald-600">Active</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400">
+                            Direct Counter Connection · Socket.IO & Supabase Synced
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {activeConversation.users?.phone_number && (
+                          <a
+                            href={`tel:${activeConversation.users.phone_number}`}
+                            className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors"
+                            title="Call Customer"
+                          >
+                            <Phone className="w-4 h-4" />
+                          </a>
+                        )}
+                      </div>
                     </div>
 
-                    <p className="text-xs text-slate-600 mb-3">{enq.description}</p>
-
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-200/80">
-                      <div className="text-xs font-bold text-slate-700">
-                        Customer: <span className="text-slate-900">{enq.customerName}</span>
-                      </div>
-
-                      {enq.hasReplied ? (
-                        <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
-                          <CheckCircle className="w-4 h-4 text-emerald-600" />
-                          <span>Quote Sent: ₹{enq.quotedPrice} (Customer Notified)</span>
+                    {/* Messages Body */}
+                    <div className="flex-1 p-4 overflow-y-auto space-y-3 bg-[#f8fafc] max-h-[460px]">
+                      {conversationMessages.length === 0 ? (
+                        <div className="text-center py-12 text-slate-400">
+                          <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                          <p className="text-xs font-bold text-slate-600">No messages in this chat yet</p>
+                          <p className="text-[11px] text-slate-400 mt-1">
+                            Send a greeting or offer a counter price quote below.
+                          </p>
                         </div>
                       ) : (
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number"
-                            placeholder="Price Quote (₹)"
-                            value={replyQuote[enq.id] || ''}
-                            onChange={(e) => setReplyQuote({ ...replyQuote, [enq.id]: e.target.value })}
-                            className="w-32 bg-white border border-slate-300 rounded px-2.5 py-1 text-xs font-bold text-slate-900 focus:outline-none focus:border-[#2874f0]"
-                          />
-                          <button
-                            onClick={() => handleReplyEnquiry(enq.id)}
-                            className="bg-[#2874f0] hover:bg-[#1759c9] text-white text-xs font-black px-3.5 py-1.5 rounded shadow-xs flex items-center gap-1 transition-colors"
-                          >
-                            <Send className="w-3 h-3" />
-                            <span>Confirm Stock & Quote</span>
-                          </button>
-                        </div>
+                        conversationMessages.map((msg) => {
+                          const isMerchant = msg.sender_id !== activeConversation.customer_id;
+                          return (
+                            <div
+                              key={msg.id}
+                              className={`flex flex-col ${isMerchant ? 'items-end' : 'items-start'}`}
+                            >
+                              <div
+                                className={`max-w-[78%] rounded-2xl px-4 py-2.5 shadow-xs ${
+                                  isMerchant
+                                    ? 'bg-[#2874f0] text-white rounded-br-xs'
+                                    : 'bg-white text-slate-900 border border-slate-200 rounded-bl-xs'
+                                }`}
+                              >
+                                {msg.message_type === 'price_quote' ? (
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-1.5 text-xs font-black text-[#ffe500]">
+                                      <Tag className="w-3.5 h-3.5" />
+                                      <span>Counter Price Quote</span>
+                                    </div>
+                                    <div className="text-base font-black">
+                                      ₹{msg.metadata?.quoted_price || msg.content}
+                                    </div>
+                                    {msg.content && msg.content !== `Counter Price Quote: ₹${msg.metadata?.quoted_price}` && (
+                                      <p className="text-xs opacity-90">{msg.content}</p>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <p className="text-xs leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                                )}
+                              </div>
+                              <span className="text-[10px] text-slate-400 mt-1 px-1">
+                                {msg.created_at
+                                  ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                  : 'Just now'}
+                              </span>
+                            </div>
+                          );
+                        })
                       )}
                     </div>
+
+                    {/* Chat Input & Fast Quote Sender */}
+                    <form onSubmit={handleSendMerchantMessage} className="p-3 border-t border-slate-200 bg-white">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-[11px] font-bold text-slate-600 flex items-center gap-1">
+                          <Tag className="w-3 h-3 text-[#2874f0]" />
+                          <span>Attach Counter Quote:</span>
+                        </span>
+                        <div className="relative">
+                          <span className="absolute left-2.5 top-1.5 text-xs font-bold text-slate-500">₹</span>
+                          <input
+                            type="number"
+                            placeholder="Price (optional)"
+                            value={chatQuotePrice}
+                            onChange={(e) => setChatQuotePrice(e.target.value)}
+                            className="w-32 bg-slate-50 border border-slate-200 rounded-lg pl-6 pr-2 py-1 text-xs font-black text-slate-900 focus:outline-none focus:border-[#2874f0] focus:bg-white"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          placeholder="Type reply or negotiate with customer..."
+                          value={chatMessageText}
+                          onChange={(e) => setChatMessageText(e.target.value)}
+                          className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-900 focus:outline-none focus:border-[#2874f0] focus:bg-white"
+                        />
+                        <button
+                          type="submit"
+                          disabled={!chatMessageText.trim() && !chatQuotePrice}
+                          className="bg-[#2874f0] hover:bg-[#1759c9] disabled:opacity-40 text-white font-black text-xs px-5 py-2.5 rounded-xl flex items-center gap-1.5 shadow-sm transition-all"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          <span>Send</span>
+                        </button>
+                      </div>
+                    </form>
+                  </>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-400">
+                    <div className="w-16 h-16 rounded-2xl bg-blue-50 text-[#2874f0] flex items-center justify-center mb-3">
+                      <MessageSquare className="w-8 h-8" />
+                    </div>
+                    <h3 className="text-base font-black text-slate-800">Direct Shopper Messaging</h3>
+                    <p className="text-xs text-slate-500 max-w-sm mt-1">
+                      Select a conversation on the left to start live negotiations, confirm counter stock, or send instant discounted price quotes.
+                    </p>
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </div>

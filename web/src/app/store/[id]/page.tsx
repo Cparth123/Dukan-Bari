@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
+import { useAuth } from '@/context/AuthContext';
 import {
   Store,
   MapPin,
@@ -15,24 +16,38 @@ import {
   CheckCircle,
   Tag,
   Star,
-  Share2,
-  AlertCircle,
   Sparkles,
-  Briefcase,
-  Scale,
-  Utensils,
   Plus,
-  Send,
   X,
   ShoppingBag,
   Navigation2,
-  ExternalLink,
   ShieldCheck,
-  Heart
+  Edit2,
+  Trash2,
+  Upload,
+  Power,
+  Save,
+  RefreshCw,
+  AlertCircle,
+  Lock
 } from 'lucide-react';
-import { useAuth } from '@/context/AuthContext';
+import { uploadImageToSupabase, SUPABASE_STORE_BUCKET } from '@/lib/storage';
+import {
+  getStoreWithProducts,
+  syncStoreToSupabase,
+  addProductToSupabase,
+  updateProductInSupabase,
+  deleteProductFromSupabase,
+  createOrGetConversation,
+  getConversationMessages,
+  sendDirectMessage,
+  playNotificationChime,
+  DbStore,
+  DbProduct
+} from '@/lib/storeService';
+import { getSocket, joinConversation, sendChatMessage } from '@/lib/socket';
 
-interface CatalogItem {
+export interface CatalogItem {
   id: string;
   name: string;
   categoryTag: string;
@@ -48,13 +63,16 @@ interface CatalogItem {
   specs?: string[];
 }
 
-interface StoreBusinessData {
+export interface StoreBusinessData {
   id: string;
+  ownerId?: string;
   name: string;
   businessType: 'retail' | 'legal_advocate' | 'tax_advisor' | 'restaurant_food' | 'pharmacy';
   category: string;
   badgeTitle: string;
   address: string;
+  city: string;
+  pincode: string;
   distanceKm: number;
   walkMinutes: number;
   rating: number;
@@ -75,490 +93,597 @@ export default function StoreDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { signOut } = useAuth();
 
-  const storeId = (params?.id as string) || 'store-1';
+  const storeIdParam = (params?.id as string) || '';
   const initialSelectedProduct = searchParams?.get('product') || '';
 
+  // Auth Context: Check logged in user and client role
+  const { user, profile, role } = useAuth();
+
+  // Loading & Error States
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Search & Filter State
   const [inStoreSearch, setInStoreSearch] = useState('');
   const [selectedProductHighlight, setSelectedProductHighlight] = useState<string>(initialSelectedProduct);
   const [activeCatalogTab, setActiveCatalogTab] = useState('All');
 
-  // Direct Live Chat modal
+  // Direct Live Chat Modal & Real-time Socket Conversation
   const [showChatModal, setShowChatModal] = useState(false);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<Array<{ sender: string; text: string; time: string }>>([
+  const [chatMessages, setChatMessages] = useState<Array<{ sender: string; text: string; time: string; isQuote?: boolean }>>([
     { sender: 'store', text: 'Namaste! How can we assist you with our services/products today?', time: 'Just now' }
   ]);
 
-  // Mock database of local business models (Advocates, CA, Kirana, Dhaba, Pharmacy)
-  const businessDirectory: { [key: string]: StoreBusinessData } = {
-    'store-1': {
-      id: 'store-1',
-      name: 'Gupta General Store & Provisions',
-      businessType: 'retail',
-      category: 'Grocery & Kirana',
-      badgeTitle: 'Local Kirana Dukaan',
-      address: 'Shop 14, Main Market, Sector 5, New Delhi',
-      distanceKm: 0.6,
-      walkMinutes: 4,
-      rating: 4.8,
-      reviewsCount: 342,
-      isLiveOpen: true,
-      statusBadge: 'Live Open · Closes at 9:30 PM',
-      badgeBg: 'bg-emerald-600 text-white',
-      bannerImg: '/gupta-store.jpg',
-      phone: '+91 9876543210',
-      whatsapp: '+91 9876543210',
-      activeDeal: 'FLAT 15% OFF on Dal & Pulses',
-      workingHours: '8:00 AM - 10:00 PM (Everyday)',
-      aboutText: 'Trusted local family grocery store serving Sector 5 since 1994. Fresh daily chakki atta, premium basmati rice, mustard & sunflower oils, and all household essentials at wholesale prices.',
-      catalog: [
-        {
-          id: 'prod-1',
-          name: 'Ashirwad Chakki Atta',
-          categoryTag: 'Flours & Grains',
-          price: 420,
-          mrp: 460,
-          discountPercent: 9,
-          unitOrDuration: '10 kg Pack',
-          description: '100% pure whole wheat stone ground chakki atta with natural aroma, high dietary fiber and soft rotis.',
-          inStock: true,
-          stockStatusText: 'In Stock - Ready at Counter',
-          itemType: 'product',
-          image: '/grocery-product.jpg',
-          specs: ['100% Whole Wheat', 'Stone Ground Chakki', 'Soft Rotis Guarantee']
-        },
-        {
-          id: 'prod-2',
-          name: 'Sunehri Gold Sunflower Oil',
-          categoryTag: 'Cooking Oils',
-          price: 650,
-          mrp: 720,
-          discountPercent: 10,
-          unitOrDuration: '5 Litre Can',
-          description: 'Refined sunflower cooking oil enriched with Vitamins A & D, heart friendly, non-sticky texture.',
-          inStock: true,
-          stockStatusText: 'In Stock - Ready at Counter',
-          itemType: 'product',
-          image: '/grocery-product.jpg',
-          specs: ['Enriched with Vit A & D', 'Zero Cholesterol', 'Triple Filtered']
-        },
-        {
-          id: 'prod-3',
-          name: 'Kohinoor Basmati Rice Extra Long',
-          categoryTag: 'Flours & Grains',
-          price: 380,
-          mrp: 440,
-          discountPercent: 14,
-          unitOrDuration: '5 kg Bag',
-          description: 'Aged extra long grain fragrant basmati rice perfect for daily biryani, pulao, and festive meals.',
-          inStock: true,
-          stockStatusText: 'In Stock - Ready at Counter',
-          itemType: 'product',
-          image: '/grocery-product.jpg',
-          specs: ['2 Years Naturally Aged', 'Extra Long Royal Grains', 'Signature Aroma']
-        },
-        {
-          id: 'prod-4',
-          name: 'Tata Salt Vacuum Evaporated',
-          categoryTag: 'Spices & Essentials',
-          price: 28,
-          mrp: 30,
-          discountPercent: 7,
-          unitOrDuration: '1 kg Pack',
-          description: 'Vacuum evaporated iodized table salt with purity seal, essential for mental development and balanced nutrition.',
-          inStock: true,
-          stockStatusText: 'In Stock - Ready at Counter',
-          itemType: 'product',
-          image: '/grocery-product.jpg',
-          specs: ['Vacuum Evaporated', 'Iodized Purity', 'Desh Ka Namak']
-        },
-        {
-          id: 'prod-5',
-          name: 'MDH Deggi Mirch & Garam Masala',
-          categoryTag: 'Spices & Essentials',
-          price: 95,
-          mrp: 110,
-          discountPercent: 14,
-          unitOrDuration: '100g Box',
-          description: 'Rich red color and authentic Punjabi aroma spice blend from hand-picked roasted herbs and whole spices.',
-          inStock: true,
-          stockStatusText: 'In Stock - Ready at Counter',
-          itemType: 'product',
-          image: '/grocery-product.jpg',
-          specs: ['Natural Deggi Red', 'No Added Preservatives', 'Aroma Lock Packaging']
-        },
-        {
-          id: 'prod-6',
-          name: 'Amul Butter Salted',
-          categoryTag: 'Dairy & Breakfast',
-          price: 58,
-          mrp: 62,
-          discountPercent: 6,
-          unitOrDuration: '100g Pack',
-          description: 'Pure pasteurized cow & buffalo milk butter, utterly butterly delicious breakfast classic.',
-          inStock: true,
-          stockStatusText: 'In Stock - Cold Storage Fresh',
-          itemType: 'product',
-          image: '/dairy-products.jpg',
-          specs: ['Cold Storage Fresh', 'Pasteurized Cream', 'Utterly Butterly Delicious']
+  // Toast Notification
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  // 100% Dynamic Store State (No hardcoded mock directory)
+  const [currentStore, setCurrentStore] = useState<StoreBusinessData>({
+    id: '',
+    name: 'Loading Store...',
+    businessType: 'retail',
+    category: 'Local Dukaan',
+    badgeTitle: 'Verified Dukaan',
+    address: 'Fetching live location...',
+    city: '',
+    pincode: '',
+    distanceKm: 0.5,
+    walkMinutes: 4,
+    rating: 4.8,
+    reviewsCount: 1,
+    isLiveOpen: true,
+    statusBadge: 'Live Open · Available Now',
+    badgeBg: 'bg-emerald-600 text-white',
+    bannerImg: '',
+    phone: '',
+    whatsapp: '',
+    activeDeal: '',
+    workingHours: '08:30 AM - 10:00 PM',
+    aboutText: '',
+    catalog: []
+  });
+
+  // -------------------------------------------------------------
+  // STORE OWNER AUTHORIZATION CHECK
+  // ONLY the verified store owner (matching client user id) or superadmin
+  // can view edit store buttons, add item, delete item, and toggle live status.
+  // Normal users/customers ONLY see standard interaction buttons (Chat, Call, WhatsApp, Map, Order).
+  // -------------------------------------------------------------
+  const isStoreOwner = Boolean(
+    // 1. Superadmin has full access to manage stores
+    role === 'superadmin' ||
+    profile?.role === 'superadmin' ||
+    // 2. Direct match on ownerId with logged-in user id or profile id
+    (user && currentStore.ownerId && (user.id === currentStore.ownerId || profile?.id === currentStore.ownerId)) ||
+    // 3. User's profile registered store_id matches this store's id
+    (profile?.store_id && currentStore.id && profile.store_id === currentStore.id) ||
+    // 4. Offline/Local draft store ('my-store') when user is logged in as shop_owner
+    (currentStore.id === 'my-store' && (role === 'shop_owner' || profile?.role === 'shop_owner'))
+  );
+
+  // -------------------------------------------------------------
+  // CRUD MODALS STATE: STORE DETAILS
+  // -------------------------------------------------------------
+  const [showStoreEditModal, setShowStoreEditModal] = useState(false);
+  const [storeEditName, setStoreEditName] = useState('');
+  const [storeEditCategory, setStoreEditCategory] = useState('');
+  const [storeEditBadgeTitle, setStoreEditBadgeTitle] = useState('');
+  const [storeEditAddress, setStoreEditAddress] = useState('');
+  const [storeEditCity, setStoreEditCity] = useState('');
+  const [storeEditPincode, setStoreEditPincode] = useState('');
+  const [storeEditWorkingHours, setStoreEditWorkingHours] = useState('');
+  const [storeEditPhone, setStoreEditPhone] = useState('');
+  const [storeEditWhatsapp, setStoreEditWhatsapp] = useState('');
+  const [storeEditBannerImg, setStoreEditBannerImg] = useState('');
+  const [storeEditActiveDeal, setStoreEditActiveDeal] = useState('');
+  const [storeEditAboutText, setStoreEditAboutText] = useState('');
+  const [uploadingBanner, setUploadingBanner] = useState(false);
+
+  // -------------------------------------------------------------
+  // CRUD MODALS STATE: PRODUCT / SERVICE
+  // -------------------------------------------------------------
+  const [showProductModal, setShowProductModal] = useState(false);
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [prodFormName, setProdFormName] = useState('');
+  const [prodFormType, setProdFormType] = useState<'product' | 'service'>('product');
+  const [prodFormTag, setProdFormTag] = useState('');
+  const [prodFormPrice, setProdFormPrice] = useState<number>(0);
+  const [prodFormMrp, setProdFormMrp] = useState<number>(0);
+  const [prodFormUnit, setProdFormUnit] = useState('1 Unit');
+  const [prodFormDesc, setProdFormDesc] = useState('');
+  const [prodFormStockStatus, setProdFormStockStatus] = useState('In Stock - Ready at Counter');
+  const [prodFormInStock, setProdFormInStock] = useState(true);
+  const [prodFormImage, setProdFormImage] = useState('/grocery-product.jpg');
+  const [prodFormSpecs, setProdFormSpecs] = useState('');
+  const [uploadingProductImg, setUploadingProductImg] = useState(false);
+
+  // -------------------------------------------------------------
+  // LOAD DYNAMIC STORE & PRODUCTS FROM SUPABASE TABLE
+  // -------------------------------------------------------------
+  const loadStoreFromSupabase = async () => {
+    setLoading(true);
+    setErrorMsg(null);
+    try {
+      const { store: dbStore, products: dbProducts } = await getStoreWithProducts(storeIdParam);
+
+      if (dbStore) {
+        // Map Supabase products to CatalogItem
+        const catalogItems: CatalogItem[] = (dbProducts || []).map((p) => {
+          const price = Number(p.price) || 0;
+          const discountAmt = Number(p.discount_price) || 0;
+          const mrp = discountAmt > 0 ? price + discountAmt : price;
+          const discountPercent = mrp > price ? Math.round(((mrp - price) / mrp) * 100) : 0;
+
+          return {
+            id: p.id,
+            name: p.name,
+            categoryTag: p.category || dbStore.category,
+            price,
+            mrp: mrp > price ? mrp : undefined,
+            discountPercent: discountPercent > 0 ? discountPercent : undefined,
+            unitOrDuration: '1 Unit',
+            description: p.description || '',
+            inStock: p.is_in_stock ?? true,
+            stockStatusText: p.is_in_stock ? 'In Stock - Ready at Counter' : 'Out of Stock',
+            itemType: dbStore.business_offering_type === 'service_providing' ? 'service' : 'product',
+            image: p.image_url || '/grocery-product.jpg',
+            specs: ['Counter Verified', 'Direct Local Delivery']
+          };
+        });
+
+        const storeData: StoreBusinessData = {
+          id: dbStore.id,
+          ownerId: dbStore.owner_id,
+          name: dbStore.store_name,
+          businessType: dbStore.business_offering_type === 'service_providing' ? 'legal_advocate' : 'retail',
+          category: dbStore.category,
+          badgeTitle: dbStore.category,
+          address: `${dbStore.address_line || ''}${dbStore.city ? ', ' + dbStore.city : ''}`,
+          city: dbStore.city || '',
+          pincode: dbStore.pincode || '',
+          distanceKm: 0.8,
+          walkMinutes: 6,
+          rating: Number(dbStore.rating) || 4.8,
+          reviewsCount: dbStore.total_reviews || 0,
+          isLiveOpen: dbStore.is_live_open ?? true,
+          statusBadge: dbStore.is_live_open ? 'Live Open · Available Now' : 'Store Currently Closed',
+          badgeBg: dbStore.is_live_open ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white',
+          bannerImg: dbStore.banner_url || '/hero-dukandar.jpg',
+          phone: dbStore.phone_contact || '',
+          whatsapp: dbStore.whatsapp_number || dbStore.phone_contact || '',
+          activeDeal: 'Verified Local Storefront',
+          workingHours: `${dbStore.standard_open_time || '08:30'} - ${dbStore.standard_close_time || '22:00'}`,
+          aboutText: dbStore.description || 'Welcome to our verified storefront on Dukan Bari.',
+          catalog: catalogItems
+        };
+
+        setCurrentStore(storeData);
+      } else {
+        // Fallback check from localStorage if merchant created offline
+        if (typeof window !== 'undefined') {
+          const savedStore = localStorage.getItem('dukan_bari_my_store');
+          if (savedStore) {
+            try {
+              const s = JSON.parse(savedStore);
+              const prods = localStorage.getItem('dukan_bari_my_products');
+              const parsedProds = prods ? JSON.parse(prods) : [];
+
+              setCurrentStore({
+                id: 'my-store',
+                ownerId: user?.id,
+                name: s.storeName || 'Champion Hair Art',
+                businessType: s.businessOfferingType === 'service_providing' ? 'legal_advocate' : 'retail',
+                category: s.category || 'Services',
+                badgeTitle: s.category || 'Local Dukaan',
+                address: s.addressLine || 'Surat Main Road',
+                city: s.city || 'Surat',
+                pincode: s.pincode || '395004',
+                distanceKm: 0.5,
+                walkMinutes: 4,
+                rating: 5.0,
+                reviewsCount: 1,
+                isLiveOpen: typeof s.isLiveOpen === 'boolean' ? s.isLiveOpen : true,
+                statusBadge: s.isLiveOpen ? 'Live Open · Available Now' : 'Store Currently Closed',
+                badgeBg: s.isLiveOpen ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white',
+                bannerImg: s.bannerUrl || '',
+                phone: s.phoneContact || '9925299431',
+                whatsapp: s.whatsappNumber || '9925299431',
+                activeDeal: 'Welcome to our Store',
+                workingHours: `${s.openTime || '08:30 AM'} - ${s.closeTime || '10:00 PM'}`,
+                aboutText: 'Local verified merchant store.',
+                catalog: parsedProds.map((p: any) => ({
+                  id: p.id || `prod-${Date.now()}`,
+                  name: p.name || 'Store Item',
+                  categoryTag: p.categoryTag || s.category || 'General',
+                  price: Number(p.price) || 0,
+                  mrp: Number(p.mrp) || Number(p.price) || 0,
+                  discountPercent: p.mrp && p.mrp > p.price ? Math.round(((p.mrp - p.price) / p.mrp) * 100) : 0,
+                  unitOrDuration: p.unitOrDuration || '1 Unit',
+                  description: p.description || '',
+                  inStock: p.inStock ?? true,
+                  stockStatusText: p.stockStatusText || 'Available at Counter',
+                  itemType: p.itemType || 'product',
+                  image: p.image || '/grocery-product.jpg',
+                  specs: ['Counter Pickup']
+                }))
+              });
+              setLoading(false);
+              return;
+            } catch (e) {
+              console.error(e);
+            }
+          }
         }
-      ]
-    },
-    'store-advocate': {
-      id: 'store-advocate',
-      name: 'Sharma & Associates Advocates & Legal Advisors',
-      businessType: 'legal_advocate',
-      category: 'Advocate & Legal Services',
-      badgeTitle: 'High Court & District Chamber',
-      address: 'Chamber 204, Lawyers Complex, Sector 5, New Delhi',
-      distanceKm: 0.4,
-      walkMinutes: 3,
-      rating: 4.9,
-      reviewsCount: 188,
-      isLiveOpen: true,
-      statusBadge: 'Advocate Chamber Live Open · Available for Consultations',
-      badgeBg: 'bg-purple-700 text-white',
-      bannerImg: '/advocate-office.jpg',
-      phone: '+91 9811002233',
-      whatsapp: '+91 9811002233',
-      activeDeal: 'Free 10-Min Preliminary Tele-Consultation',
-      workingHours: '10:00 AM - 7:00 PM (Mon - Sat)',
-      aboutText: 'Senior Advocates practicing in High Court & District Courts. Specializing in Property Title Verification, Civil Disputes, RERA Matters, Legal Drafting, Affidavits, and Corporate Legal Advisory for local businesses.',
-      catalog: [
-        {
-          id: 'serv-1',
-          name: 'Legal Consultation & Document Review',
-          categoryTag: 'Consultation',
-          price: 500,
-          mrp: 800,
-          discountPercent: 37,
-          unitOrDuration: '30 Mins Chamber Session',
-          description: 'Direct 1-to-1 chamber consultation on property, civil dispute, matrimonial or business agreements.',
-          inStock: true,
-          stockStatusText: 'Slot Available Today',
-          itemType: 'service',
-          image: '/advocate-office.jpg',
-          specs: ['30 Mins Chamber Session', 'High Court Practicing Advocate', '100% Confidential']
-        },
-        {
-          id: 'serv-2',
-          name: 'Property Sale Deed & Registry Verification',
-          categoryTag: 'Property & Contracts',
-          price: 1500,
-          mrp: 2000,
-          discountPercent: 25,
-          unitOrDuration: 'Complete Title Search',
-          description: 'Verification of 30-year land records, encumbrance certificate, registry authenticity and draft preparation.',
-          inStock: true,
-          stockStatusText: 'Available - 24hr Turnaround',
-          itemType: 'service',
-          image: '/advocate-office.jpg',
-          specs: ['30-Year Title Search', 'Encumbrance Certificate Check', 'Draft Verification']
-        },
-        {
-          id: 'serv-3',
-          name: 'Affidavit, Rent Agreement & Notary Attestation',
-          categoryTag: 'Documentation',
-          price: 350,
-          mrp: 500,
-          discountPercent: 30,
-          unitOrDuration: 'Same Day Delivery',
-          description: 'Stamp paper notarized rental agreement, name change affidavits, partnership deeds prepared in 1 hour.',
-          inStock: true,
-          stockStatusText: 'Ready in 1 Hour',
-          itemType: 'service',
-          image: '/advocate-office.jpg',
-          specs: ['Official Govt Stamp Paper', 'Notary Public Attested', 'Doorstep Delivery Option']
-        },
-        {
-          id: 'serv-4',
-          name: 'Consumer Court & Legal Notice Drafting',
-          categoryTag: 'Litigation & Notice',
-          price: 1200,
-          mrp: 1800,
-          discountPercent: 33,
-          unitOrDuration: 'Official Notice with Dispatch',
-          description: 'Drafting formal legal notices under Section 138 (Cheque Bounce), defective services or unpaid dues.',
-          inStock: true,
-          stockStatusText: 'Available - Same Day Dispatch',
-          itemType: 'service',
-          image: '/advocate-office.jpg',
-          specs: ['Section 138 Notice', 'Speed Post with Tracking', 'Statutory Legal Backing']
-        }
-      ]
-    },
-    'store-food': {
-      id: 'store-food',
-      name: 'Punjab Dhaba & Family Restaurant',
-      businessType: 'restaurant_food',
-      category: 'Food, Dhabas & Restaurants',
-      badgeTitle: 'Authentic Tandoor & Thali',
-      address: 'Near Metro Gate 3, Sector 5 Market, New Delhi',
-      distanceKm: 1.2,
-      walkMinutes: 9,
-      rating: 4.8,
-      reviewsCount: 520,
-      isLiveOpen: true,
-      statusBadge: 'Tandoor Live Open · Serving Hot Food',
-      badgeBg: 'bg-emerald-600 text-white',
-      bannerImg: '/punjab-dhaba.jpg',
-      phone: '+91 9822114455',
-      whatsapp: '+91 9822114455',
-      activeDeal: 'FREE Butter Roti on orders above ₹300',
-      workingHours: '11:00 AM - 11:30 PM (Daily)',
-      aboutText: 'Famous for smoky charcoal tandoori rotis, Dal Makhani, Paneer Butter Masala, and wholesome daily tiffin service with counter pickup and fast delivery.',
-      catalog: [
-        {
-          id: 'food-1',
-          name: 'Special Dal Makhani (Slow Cooked Overnight)',
-          categoryTag: 'Main Course',
-          price: 180,
-          mrp: 210,
-          discountPercent: 14,
-          unitOrDuration: 'Full Handi (500ml)',
-          description: 'Rich black lentils simmered with white butter, fresh cream, and traditional spices over charcoal tandoor.',
-          inStock: true,
-          stockStatusText: 'Fresh Hot - Ready at Counter',
-          itemType: 'product',
-          image: '/dhaba-thali.jpg',
-          specs: ['12-Hour Charcoal Simmered', 'Amul Butter & Cream Swirl', 'Served Hot with Onions']
-        },
-        {
-          id: 'food-2',
-          name: 'Paneer Butter Masala',
-          categoryTag: 'Main Course',
-          price: 220,
-          mrp: 260,
-          discountPercent: 15,
-          unitOrDuration: 'Full Handi (500ml)',
-          description: 'Fresh malai paneer cubes in velvety tomato cashew gravy with aromatic kasuri methi and butter.',
-          inStock: true,
-          stockStatusText: 'Fresh Hot - Ready in 10 mins',
-          itemType: 'product',
-          image: '/dhaba-thali.jpg',
-          specs: ['Fresh Malai Paneer Cubes', 'Cashew Tomato Velvet Gravy', 'Served with Green Chutney']
-        },
-        {
-          id: 'food-3',
-          name: 'Butter Tandoori Roti (Whole Wheat)',
-          categoryTag: 'Breads',
-          price: 15,
-          mrp: 20,
-          discountPercent: 25,
-          unitOrDuration: '1 pc Hot Roti',
-          description: 'Hot crisp clay tandoor baked whole wheat roti brushed with pure desi ghee/butter.',
-          inStock: true,
-          stockStatusText: 'Live Charcoal Tandoor Ready',
-          itemType: 'product',
-          image: '/dhaba-thali.jpg',
-          specs: ['100% Whole Wheat', 'Clay Tandoor Baked', 'Desi Butter Brushed']
-        },
-        {
-          id: 'food-4',
-          name: 'Special Executive Punjabi Thali',
-          categoryTag: 'Thali Meals',
-          price: 199,
-          mrp: 250,
-          discountPercent: 20,
-          unitOrDuration: 'Complete Meal Pack',
-          description: 'Dal Makhani + Shahi Paneer + Jeera Rice + 4 Butter Rotis + Raita + Salad + Hot Gulab Jamun.',
-          inStock: true,
-          stockStatusText: 'Fresh Hot - Complete Meal Deal',
-          itemType: 'product',
-          image: '/dhaba-thali.jpg',
-          specs: ['2 Premium Curries', '4 Butter Rotis + Jeera Rice', 'Raita + Salad + Gulab Jamun']
-        }
-      ]
-    },
-    'store-2': {
-      id: 'store-2',
-      name: 'Apollo 24/7 Chemist & Medical Pharmacy',
-      businessType: 'pharmacy',
-      category: 'Pharmacy & Medical',
-      badgeTitle: 'Licensed Medical Store',
-      address: 'Plot 3, Near Metro Gate 2, Sector 5, New Delhi',
-      distanceKm: 1.1,
-      walkMinutes: 8,
-      rating: 4.9,
-      reviewsCount: 410,
-      isLiveOpen: true,
-      statusBadge: 'Live Open 24/7',
-      badgeBg: 'bg-emerald-600 text-white',
-      bannerImg: '/apollo-pharmacy.jpg',
-      phone: '+91 9811223344',
-      whatsapp: '+91 9811223344',
-      workingHours: 'Open 24 Hours · All 7 Days',
-      aboutText: 'Complete neighborhood chemist store stocked with prescription medicines, surgical items, baby care, diabetic care, and emergency healthcare products.',
-      catalog: [
-        {
-          id: 'med-1',
-          name: 'Crocin Pain Relief 650mg Tablet',
-          categoryTag: 'Fever & Pain',
-          price: 32,
-          mrp: 35,
-          discountPercent: 9,
-          unitOrDuration: 'Strip of 15 Tablets',
-          description: 'Fast acting paracetamol formulation for fever, headache, body ache and dental pain relief.',
-          inStock: true,
-          stockStatusText: 'In Stock - Ready at Counter',
-          itemType: 'product',
-          image: '/pharmacy-products.jpg',
-          specs: ['Paracetamol 650mg', 'Expiry Year: 2028', 'Licensed Chemist Genuine']
-        },
-        {
-          id: 'med-2',
-          name: 'Dettol Antiseptic Disinfectant Liquid',
-          categoryTag: 'First Aid',
-          price: 85,
-          mrp: 95,
-          discountPercent: 11,
-          unitOrDuration: '250 ml Bottle',
-          description: 'Trusted antiseptic formula for first aid, cuts, grazes, bites, and personal hygiene protection.',
-          inStock: true,
-          stockStatusText: 'In Stock - Ready at Counter',
-          itemType: 'product',
-          image: '/pharmacy-products.jpg',
-          specs: ['250 ml Bottle', '99.9% Germ Protection', 'First Aid Essential']
-        },
-        {
-          id: 'med-3',
-          name: 'Digital Blood Pressure Monitor (Omron)',
-          categoryTag: 'Health Devices',
-          price: 1850,
-          mrp: 2250,
-          discountPercent: 18,
-          unitOrDuration: '1 Device with 3yr Warranty',
-          description: 'Accurate clinical grade automatic digital BP monitor with memory storage, hypertension indicator and large cuff.',
-          inStock: true,
-          stockStatusText: 'In Stock - 3 Year Warranty',
-          itemType: 'product',
-          image: '/pharmacy-products.jpg',
-          specs: ['Clinically Validated Accuracy', '3 Years Official Warranty', 'Memory for 60 Readings']
-        }
-      ]
-    },
-    'store-advisor': {
-      id: 'store-advisor',
-      name: 'Aggarwal & Co. Chartered Accountants & Tax Advisors',
-      businessType: 'tax_advisor',
-      category: 'CA & Tax Advisors',
-      badgeTitle: 'ICAI Registered CA Firm',
-      address: 'Office 203, 2nd Floor, Commercial Plaza, Sector 5, New Delhi',
-      distanceKm: 0.5,
-      walkMinutes: 4,
-      rating: 4.9,
-      reviewsCount: 215,
-      isLiveOpen: true,
-      statusBadge: 'Office Live Open · Available for Tax Consultation',
-      badgeBg: 'bg-indigo-700 text-white',
-      bannerImg: '/ca-advisor.jpg',
-      phone: '+91 9810012345',
-      whatsapp: '+91 9810012345',
-      activeDeal: 'FLAT 20% OFF on Individual ITR Filing',
-      workingHours: '9:30 AM - 7:30 PM (Mon - Sat)',
-      aboutText: 'Experienced Chartered Accountants and tax consultants handling Income Tax returns, GST filing, ROC compliances, MSME registrations, project financing, and accounting audits for local traders and individuals.',
-      catalog: [
-        {
-          id: 'ca-1',
-          name: 'Income Tax Return (ITR 1 / 4) Filing & Computation',
-          categoryTag: 'Income Tax',
-          price: 799,
-          mrp: 1200,
-          discountPercent: 33,
-          unitOrDuration: 'Per Assessment Year',
-          description: 'Complete calculation, tax optimization, deductions check (80C, 80D), and instant e-filing with ITR-V acknowledgment.',
-          inStock: true,
-          stockStatusText: 'Available - E-File Today',
-          itemType: 'service',
-          image: '/ca-advisor.jpg',
-          specs: ['AY 2026-27 Compliant', 'Max Tax Savings Check', 'Instant ITR-V Ack Receipt']
-        },
-        {
-          id: 'ca-2',
-          name: 'GST Monthly Return Filing (GSTR-1 & 3B)',
-          categoryTag: 'GST & Indirect Tax',
-          price: 1199,
-          mrp: 1600,
-          discountPercent: 25,
-          unitOrDuration: 'Monthly Package',
-          description: 'Reconciliation of sales and input tax credit (2B matching), monthly filing, and compliance certificate.',
-          inStock: true,
-          stockStatusText: 'Available - Monthly Package',
-          itemType: 'service',
-          image: '/ca-advisor.jpg',
-          specs: ['Sales & 2B Matching', 'Zero Late Fee Guarantee', 'Govt Portal Certified']
-        },
-        {
-          id: 'ca-3',
-          name: 'New Private Limited / LLP Incorporation',
-          categoryTag: 'Company Formation',
-          price: 4999,
-          mrp: 6500,
-          discountPercent: 23,
-          unitOrDuration: 'All Inclusive Package',
-          description: 'Name approval (RUN), DSC, DIN, MOA/AOA drafting, Certificate of Incorporation, PAN & TAN in 7 days.',
-          inStock: true,
-          stockStatusText: 'Available - 7 Day Fastrack',
-          itemType: 'service',
-          image: '/ca-advisor.jpg',
-          specs: ['2 DSC + 2 DIN Included', 'MOA & AOA Drafting', 'PAN + TAN + Bank Intro']
-        },
-        {
-          id: 'ca-4',
-          name: 'Financial Advisory & Business Loan Project Report',
-          categoryTag: 'Financial Advisory',
-          price: 2500,
-          mrp: 3500,
-          discountPercent: 28,
-          unitOrDuration: 'Bank Ready CMA Data Report',
-          description: 'CMA data preparation, 5-year balance sheet projections, DSCR calculation for MSME and business CC limit.',
-          inStock: true,
-          stockStatusText: 'Available - Bank Approved Format',
-          itemType: 'service',
-          image: '/ca-advisor.jpg',
-          specs: ['Bank Ready CMA Data', '5-Year Balance Sheet Proj.', 'MSME & CC Limit Approved']
-        }
-      ]
+        setErrorMsg('Store record not found. You can set it up now.');
+      }
+    } catch (err: any) {
+      console.error('Error fetching store data:', err);
+      setErrorMsg(err.message || 'Error loading store information');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const [currentStore, setCurrentStore] = useState<StoreBusinessData>(
-    businessDirectory[storeId] || businessDirectory['store-1']
-  );
-
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const savedStore = localStorage.getItem('dukan_bari_my_store');
-      const savedProducts = localStorage.getItem('dukan_bari_my_products');
-      if (savedStore) {
-        try {
-          const s = JSON.parse(savedStore);
-          setCurrentStore((prev) => ({
+    loadStoreFromSupabase();
+  }, [storeIdParam]);
+
+  // Real-time Socket.IO Message Listener & Audio Notifications for Shopper
+  useEffect(() => {
+    let activeSocket: any = null;
+    async function initLiveSocket() {
+      try {
+        activeSocket = await getSocket();
+        activeSocket.on('receive_message', (msg: any) => {
+          playNotificationChime();
+          const isQuote = msg.message_type === 'price_quote';
+          const textContent = isQuote
+            ? `🏷️ Counter Price Quote: ₹${msg.metadata?.quoted_price || msg.content}`
+            : msg.content;
+
+          setChatMessages((prev) => [
             ...prev,
-            name: s.storeName || prev.name,
-            category: s.category || prev.category,
-            address: s.addressLine || prev.address,
-            bannerImg: s.bannerUrl || prev.bannerImg,
-            phone: s.phoneContact || prev.phone,
-            whatsapp: s.whatsappNumber || prev.whatsapp,
-            isLiveOpen: typeof s.isLiveOpen === 'boolean' ? s.isLiveOpen : prev.isLiveOpen,
-            catalog: savedProducts ? JSON.parse(savedProducts) : prev.catalog,
-          }));
-        } catch (e) {
-          console.error('Error applying dynamic store:', e);
-        }
+            {
+              sender: 'store',
+              text: textContent,
+              time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              isQuote
+            }
+          ]);
+
+          showToast(`💬 New response from ${currentStore.name}: ${textContent}`);
+        });
+      } catch (err) {
+        console.warn('Store socket initialization warning:', err);
       }
     }
-  }, [storeId]);
+    initLiveSocket();
 
-  // Identify the highlighted item if clicked or passed
-  const spotlightItem = currentStore.catalog.find(
-    (item) =>
-      item.name.toLowerCase().includes(selectedProductHighlight.toLowerCase()) ||
-      item.id === selectedProductHighlight
-  ) || currentStore.catalog[0];
+    return () => {
+      if (activeSocket) {
+        activeSocket.off('receive_message');
+      }
+    };
+  }, [currentStore.name]);
+
+  // -------------------------------------------------------------
+  // 1-TAP LIVE OPEN / CLOSED TOGGLE (SYNC WITH SUPABASE TABLE)
+  // -------------------------------------------------------------
+  const handleToggleLiveStatus = async () => {
+    if (!isStoreOwner) {
+      alert('Permission denied: Only the verified store owner can change store status.');
+      return;
+    }
+    const nextStatus = !currentStore.isLiveOpen;
+    const updated: StoreBusinessData = {
+      ...currentStore,
+      isLiveOpen: nextStatus,
+      statusBadge: nextStatus ? 'Live Open · Available Now' : 'Store Currently Closed',
+      badgeBg: nextStatus ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'
+    };
+    setCurrentStore(updated);
+    showToast(`Store status updated to: ${nextStatus ? '🟢 LIVE OPEN' : '🔴 CLOSED'}`);
+
+    // Sync to Supabase `stores` table
+    await syncStoreToSupabase({
+      id: currentStore.id,
+      is_live_open: nextStatus
+    });
+  };
+
+  // -------------------------------------------------------------
+  // STORE DETAILS CRUD: EDIT & SAVE (SYNC WITH SUPABASE TABLE)
+  // -------------------------------------------------------------
+  const handleOpenStoreEdit = () => {
+    if (!isStoreOwner) return;
+    setStoreEditName(currentStore.name);
+    setStoreEditCategory(currentStore.category);
+    setStoreEditBadgeTitle(currentStore.badgeTitle);
+    setStoreEditAddress(currentStore.address);
+    setStoreEditCity(currentStore.city || 'Surat');
+    setStoreEditPincode(currentStore.pincode || '395004');
+    setStoreEditWorkingHours(currentStore.workingHours);
+    setStoreEditPhone(currentStore.phone);
+    setStoreEditWhatsapp(currentStore.whatsapp);
+    setStoreEditBannerImg(currentStore.bannerImg);
+    setStoreEditActiveDeal(currentStore.activeDeal || '');
+    setStoreEditAboutText(currentStore.aboutText);
+    setShowStoreEditModal(true);
+  };
+
+  const handleSaveStoreDetails = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isStoreOwner) {
+      alert('Permission denied: Only the verified store owner can edit store details.');
+      return;
+    }
+    if (!storeEditName.trim()) {
+      alert('Store name cannot be empty');
+      return;
+    }
+
+    const payload: Partial<DbStore> = {
+      id: currentStore.id && currentStore.id.length > 20 ? currentStore.id : undefined,
+      store_name: storeEditName.trim(),
+      category: storeEditCategory.trim() || 'Grocery & Kirana',
+      address_line: storeEditAddress.trim() || 'Surat Main Road',
+      city: storeEditCity.trim() || 'Surat',
+      pincode: storeEditPincode.trim() || '395004',
+      phone_contact: storeEditPhone.trim(),
+      whatsapp_number: storeEditWhatsapp.trim() || storeEditPhone.trim(),
+      banner_url: storeEditBannerImg || undefined,
+      description: storeEditAboutText.trim() || undefined,
+      is_live_open: currentStore.isLiveOpen
+    };
+
+    const savedDbStore = await syncStoreToSupabase(payload);
+
+    if (savedDbStore) {
+      setCurrentStore((prev) => ({
+        ...prev,
+        id: savedDbStore.id,
+        name: savedDbStore.store_name,
+        category: savedDbStore.category,
+        badgeTitle: savedDbStore.category,
+        address: `${savedDbStore.address_line}, ${savedDbStore.city}`,
+        city: savedDbStore.city,
+        pincode: savedDbStore.pincode,
+        phone: savedDbStore.phone_contact || '',
+        whatsapp: savedDbStore.whatsapp_number || '',
+        bannerImg: savedDbStore.banner_url || '',
+        aboutText: savedDbStore.description || ''
+      }));
+      setShowStoreEditModal(false);
+      showToast('✓ Store profile updated successfully!');
+    } else {
+      alert('Failed to update store details. Please check your connection.');
+    }
+  };
+
+  // Upload Banner directly to Supabase Storage Bucket
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const targetStoreId = currentStore.id || storeIdParam;
+    setUploadingBanner(true);
+    const res = await uploadImageToSupabase(file, 'banners', {
+      existingUrl: storeEditBannerImg || currentStore.bannerImg,
+      customName: targetStoreId ? `store_banner_${targetStoreId}` : undefined,
+    });
+    setUploadingBanner(false);
+
+    if (res.success && res.url) {
+      setStoreEditBannerImg(res.url);
+      setCurrentStore((prev) => ({ ...prev, bannerImg: res.url! }));
+      showToast('✓ Store banner updated successfully!');
+      if (targetStoreId) {
+        syncStoreToSupabase({
+          id: targetStoreId,
+          banner_url: res.url,
+        }).catch((e) => console.warn('Banner auto-sync note:', e));
+      }
+    } else {
+      alert(`Upload note: ${res.error || 'Failed to upload image'}`);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // PRODUCT / SERVICE CRUD: ADD, EDIT, DELETE (SYNC WITH SUPABASE TABLE)
+  // -------------------------------------------------------------
+  const handleOpenAddProduct = () => {
+    if (!isStoreOwner) return;
+    setEditingProductId(null);
+    setProdFormName('');
+    setProdFormType('product');
+    setProdFormTag(currentStore.category || 'General');
+    setProdFormPrice(150);
+    setProdFormMrp(180);
+    setProdFormUnit('1 Unit');
+    setProdFormDesc('');
+    setProdFormStockStatus('In Stock - Ready at Counter');
+    setProdFormInStock(true);
+    setProdFormImage('/grocery-product.jpg');
+    setProdFormSpecs('Counter Verified, Instant Delivery');
+    setShowProductModal(true);
+  };
+
+  const handleOpenEditProduct = (item: CatalogItem) => {
+    if (!isStoreOwner) return;
+    setEditingProductId(item.id);
+    setProdFormName(item.name);
+    setProdFormType(item.itemType || 'product');
+    setProdFormTag(item.categoryTag);
+    setProdFormPrice(item.price);
+    setProdFormMrp(item.mrp || item.price);
+    setProdFormUnit(item.unitOrDuration);
+    setProdFormDesc(item.description);
+    setProdFormStockStatus(item.stockStatusText || (item.inStock ? 'In Stock - Ready at Counter' : 'Out of Stock'));
+    setProdFormInStock(item.inStock);
+    setProdFormImage(item.image);
+    setProdFormSpecs(item.specs ? item.specs.join(', ') : '');
+    setShowProductModal(true);
+  };
+
+  const handleSaveProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isStoreOwner) {
+      alert('Permission denied: Only the verified store owner can add or edit products.');
+      return;
+    }
+    if (!prodFormName.trim()) {
+      alert('Product / Service name is required');
+      return;
+    }
+
+    const price = Number(prodFormPrice) || 0;
+    const mrp = Number(prodFormMrp) || price;
+    const discountAmt = mrp > price ? mrp - price : 0;
+    const discountPercent = mrp > price ? Math.round(((mrp - price) / mrp) * 100) : 0;
+    const specsArray = prodFormSpecs
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (editingProductId) {
+      // UPDATE in Supabase
+      const updated = await updateProductInSupabase({
+        id: editingProductId,
+        name: prodFormName.trim(),
+        price,
+        discount_price: discountAmt,
+        category: prodFormTag.trim() || currentStore.category,
+        description: prodFormDesc.trim(),
+        image_url: prodFormImage,
+        is_in_stock: prodFormInStock
+      });
+
+      if (updated) {
+        setCurrentStore((prev) => ({
+          ...prev,
+          catalog: prev.catalog.map((item) =>
+            item.id === editingProductId
+              ? {
+                ...item,
+                name: updated.name,
+                price: Number(updated.price),
+                mrp: mrp > price ? mrp : undefined,
+                discountPercent: discountPercent > 0 ? discountPercent : undefined,
+                categoryTag: updated.category || prev.category,
+                description: updated.description || '',
+                image: updated.image_url || '/grocery-product.jpg',
+                inStock: updated.is_in_stock ?? true,
+                stockStatusText: updated.is_in_stock ? 'In Stock - Ready at Counter' : 'Out of Stock',
+                specs: specsArray
+              }
+              : item
+          )
+        }));
+        showToast('✓ Item updated in catalog successfully!');
+        setShowProductModal(false);
+      } else {
+        alert('Failed to update item in catalog.');
+      }
+    } else {
+      // CREATE in Supabase
+      const inserted = await addProductToSupabase({
+        store_id: currentStore.id,
+        name: prodFormName.trim(),
+        price,
+        discount_price: discountAmt,
+        category: prodFormTag.trim() || currentStore.category,
+        description: prodFormDesc.trim(),
+        image_url: prodFormImage,
+        is_in_stock: prodFormInStock
+      });
+
+      if (inserted) {
+        const newItem: CatalogItem = {
+          id: inserted.id,
+          name: inserted.name,
+          categoryTag: inserted.category || currentStore.category,
+          price: Number(inserted.price),
+          mrp: mrp > price ? mrp : undefined,
+          discountPercent: discountPercent > 0 ? discountPercent : undefined,
+          unitOrDuration: prodFormUnit.trim() || '1 Unit',
+          description: inserted.description || '',
+          inStock: inserted.is_in_stock ?? true,
+          stockStatusText: inserted.is_in_stock ? 'In Stock - Ready at Counter' : 'Out of Stock',
+          itemType: prodFormType,
+          image: inserted.image_url || '/grocery-product.jpg',
+          specs: specsArray.length > 0 ? specsArray : ['Verified Stock']
+        };
+
+        setCurrentStore((prev) => ({
+          ...prev,
+          catalog: [newItem, ...prev.catalog]
+        }));
+        showToast('✓ New item added to catalog successfully!');
+        setShowProductModal(false);
+      } else {
+        alert('Failed to add item to catalog.');
+      }
+    }
+  };
+
+  const handleDeleteProduct = async (id: string, name: string) => {
+    if (!isStoreOwner) {
+      alert('Permission denied: Only the verified store owner can delete products.');
+      return;
+    }
+    if (!confirm(`Are you sure you want to delete "${name}" from your catalog?`)) {
+      return;
+    }
+
+    const ok = await deleteProductFromSupabase(id);
+    if (ok) {
+      setCurrentStore((prev) => ({
+        ...prev,
+        catalog: prev.catalog.filter((c) => c.id !== id)
+      }));
+      if (selectedProductHighlight === name || selectedProductHighlight === id) {
+        setSelectedProductHighlight('');
+      }
+      showToast(`✓ "${name}" removed from catalog.`);
+    } else {
+      alert('Failed to delete item from catalog.');
+    }
+  };
+
+  // Upload Product Image to Supabase Storage Bucket
+  const handleProductImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadingProductImg(true);
+    const res = await uploadImageToSupabase(file, 'products', {
+      existingUrl: prodFormImage,
+      customName: editingProductId ? `prod_${editingProductId}` : undefined,
+    });
+    setUploadingProductImg(false);
+
+    if (res.success && res.url) {
+      setProdFormImage(res.url);
+      showToast('✓ Photo updated successfully!');
+    } else {
+      alert(`Upload note: ${res.error || 'Failed to upload image'}`);
+    }
+  };
+
+  // Spotlight Item identification
+  const spotlightItem =
+    currentStore.catalog.find(
+      (item) =>
+        item.name.toLowerCase().includes(selectedProductHighlight.toLowerCase()) ||
+        item.id === selectedProductHighlight
+    ) || currentStore.catalog[0];
 
   // In-store filtered catalog
   const filteredCatalog = currentStore.catalog.filter((item) => {
@@ -569,20 +694,137 @@ export default function StoreDetailPage() {
     return matchesTab && matchesSearch;
   });
 
-  const catalogCategories = ['All', ...Array.from(new Set(currentStore.catalog.map((c) => c.categoryTag)))];
+  const catalogCategories = [
+    'All',
+    ...Array.from(new Set(currentStore.catalog.map((c) => c.categoryTag).filter(Boolean)))
+  ];
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  // Handle Opening Live Chat modal & connecting room
+  const handleOpenLiveChat = async (prefilledText?: string) => {
+    if (!user) {
+      const currentPath = `/store/${storeIdParam || currentStore.id}`;
+      router.push(`/login?redirect=${encodeURIComponent(currentPath)}`);
+      return;
+    }
+
+    if (prefilledText) {
+      setChatInput(prefilledText);
+    }
+    setShowChatModal(true);
+
+    if (currentStore.id) {
+      try {
+        const conv = await createOrGetConversation(currentStore.id, user.id, prefilledText);
+        if (conv) {
+          setActiveConversationId(conv.id);
+          await joinConversation(conv.id);
+          const msgs = await getConversationMessages(conv.id);
+          if (msgs && msgs.length > 0) {
+            setChatMessages(
+              msgs.map((m) => {
+                const isQuote = m.message_type === 'price_quote';
+                const text = isQuote
+                  ? `🏷️ Counter Price Quote: ₹${m.metadata?.quoted_price || m.content}`
+                  : m.content;
+                return {
+                  sender: m.sender_id === conv.customer_id ? 'user' : 'store',
+                  text,
+                  time: m.created_at
+                    ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    : 'Recently',
+                  isQuote
+                };
+              })
+            );
+          }
+        }
+      } catch (err) {
+        console.warn('Could not sync chat conversation:', err);
+      }
+    }
+  };
+
+  const handleOpenChatForItem = (itemName: string, itemPrice: number) => {
+    if (!user) {
+      const currentPath = `/store/${storeIdParam || currentStore.id}`;
+      router.push(`/login?redirect=${encodeURIComponent(currentPath)}`);
+      return;
+    }
+    handleOpenLiveChat(`Namaste, is "${itemName}" (₹${itemPrice}) available at counter right now?`);
+  };
+
+  // Handle Live Chat Send (Saves to Supabase & Emits to Merchant via Socket)
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) {
+      const currentPath = `/store/${storeIdParam || currentStore.id}`;
+      router.push(`/login?redirect=${encodeURIComponent(currentPath)}`);
+      return;
+    }
+
     if (!chatInput.trim()) return;
+    const userMsg = chatInput.trim();
+    setChatInput('');
+
+    const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     setChatMessages((prev) => [
       ...prev,
-      { sender: 'user', text: chatInput, time: 'Just now' }
+      { sender: 'user', text: userMsg, time: timeNow }
     ]);
-    setChatInput('');
+
+    try {
+      let convId = activeConversationId;
+      if (!convId && currentStore.id) {
+        const conv = await createOrGetConversation(currentStore.id, user.id, userMsg);
+        if (conv) {
+          convId = conv.id;
+          setActiveConversationId(conv.id);
+          await joinConversation(conv.id);
+        }
+      }
+
+      if (convId) {
+        await sendDirectMessage({
+          conversation_id: convId,
+          sender_id: user.id,
+          content: userMsg,
+          message_type: 'text'
+        });
+
+        await sendChatMessage({
+          conversationId: convId,
+          content: userMsg,
+          messageType: 'text',
+          senderId: user.id
+        });
+      }
+    } catch (err) {
+      console.error('Error sending customer chat message:', err);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#f1f3f6] flex flex-col items-center justify-center p-6 space-y-4">
+        <RefreshCw className="w-10 h-10 text-[#2874f0] animate-spin" />
+        <h2 className="text-lg font-black text-slate-800">
+          Loading Store & Catalog...
+        </h2>
+        <p className="text-xs text-slate-500">Connecting to verified merchant catalog...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#f1f3f6] text-slate-900 font-sans pb-16">
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed top-4 right-4 z-50 bg-slate-900 text-white text-xs font-black px-4 py-3 rounded-lg shadow-xl border border-slate-700 flex items-center gap-2 animate-bounce">
+          <CheckCircle className="w-4 h-4 text-emerald-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* 1. Top Flipkart Blue Bar */}
       <header className="bg-[#2874f0] text-white sticky top-0 z-40 shadow-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between gap-4">
@@ -592,32 +834,98 @@ export default function StoreDetailPage() {
               className="p-1 hover:bg-white/10 rounded-sm text-white flex items-center gap-1 text-xs font-bold"
             >
               <ArrowLeft className="w-4 h-4" />
-              <span>Back to Discovery</span>
+              <span>Back</span>
             </button>
             <div className="h-4 w-px bg-blue-300/40 hidden sm:block" />
             <span className="text-sm font-black italic tracking-tight hidden sm:inline">
-              Dukan Bari Store & Service Desk
+              Dukan Bari · {currentStore.name}
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
-            <Link
-              href="/merchant"
-              className="bg-white/15 hover:bg-white/25 text-white font-bold text-xs px-2.5 py-1.5 rounded-sm border border-white/20 flex items-center gap-1.5 transition-colors"
-              title="Store Owner Studio - Add/Edit Banner, Products, Offers in Supabase Store Bucket"
-            >
-              <Store className="w-3.5 h-3.5 text-[#ffe500]" />
-              <span className="hidden sm:inline">Store Owner Studio</span>
-            </Link>
+          <div className="flex items-center gap-2 sm:gap-3">
+            {isStoreOwner ? (
+              <>
+                {/* 1-Tap Quick Live Status Switch (Syncs to Supabase) */}
+                <button
+                  onClick={handleToggleLiveStatus}
+                  className={`text-xs font-black px-2.5 py-1.5 rounded-sm flex items-center gap-1.5 transition-colors shadow-xs ${currentStore.isLiveOpen
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                    : 'bg-rose-600 hover:bg-rose-700 text-white'
+                    }`}
+                  title="Toggle Store Live Open / Closed"
+                >
+                  <Power className="w-3.5 h-3.5" />
+                  <span>{currentStore.isLiveOpen ? 'LIVE OPEN' : 'CLOSED'}</span>
+                </button>
 
-            <button
-              onClick={() => setShowChatModal(true)}
-              className="bg-[#ffe500] text-[#2874f0] font-black text-xs px-3.5 py-1.5 rounded-sm shadow-xs flex items-center gap-1.5"
-            >
-              <MessageSquare className="w-3.5 h-3.5" />
-              <span>Direct Live Chat (Poochhein)</span>
-            </button>
-            <Link href="/" className="text-xs font-bold text-white hover:text-blue-100">
+                {/* Edit Store Details Modal Button */}
+                <button
+                  onClick={handleOpenStoreEdit}
+                  className="bg-white/15 hover:bg-white/25 text-white font-bold text-xs px-2.5 py-1.5 rounded-sm border border-white/20 flex items-center gap-1.5 transition-colors"
+                  title="Edit Store Profile"
+                >
+                  <Edit2 className="w-3.5 h-3.5 text-[#ffe500]" />
+                  <span className="hidden sm:inline">Edit Store</span>
+                </button>
+
+                {/* Add Product / Service Modal Button */}
+                <button
+                  onClick={handleOpenAddProduct}
+                  className="bg-[#ffe500] hover:bg-amber-400 text-[#1e3a8a] font-black text-xs px-3 py-1.5 rounded-sm shadow-xs flex items-center gap-1.5 transition-colors"
+                  title="Add Item or Service to Catalog"
+                >
+                  <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                  <span>+ Add Item</span>
+                </button>
+
+                <Link
+                  href="/merchant"
+                  className="bg-white/15 hover:bg-white/25 text-white font-bold text-xs px-2.5 py-1.5 rounded-sm border border-white/20 hidden md:flex items-center gap-1.5 transition-colors"
+                  title="Merchant Studio"
+                >
+                  <Store className="w-3.5 h-3.5 text-[#ffe500]" />
+                  <span>Merchant Studio</span>
+                </Link>
+              </>
+            ) : (
+              <>
+                {/* Normal User / Customer View: Store Status Pill + Live Chat + Call Shop */}
+                <span
+                  className={`text-xs font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5 shadow-xs ${currentStore.isLiveOpen
+                    ? 'bg-emerald-500/20 text-emerald-100 border border-emerald-400/30'
+                    : 'bg-rose-500/20 text-rose-100 border border-rose-400/30'
+                    }`}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full ${currentStore.isLiveOpen ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'
+                      }`}
+                  />
+                  <span>{currentStore.isLiveOpen ? 'Store Open' : 'Store Closed'}</span>
+                </span>
+
+                <button
+                  onClick={() => handleOpenLiveChat()}
+                  className="bg-[#ffe500] hover:bg-amber-400 text-[#1e3a8a] font-black text-xs px-3 py-1.5 rounded-sm shadow-xs flex items-center gap-1.5 transition-colors"
+                  title="Direct Live Chat with Store"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Chat</span>
+                </button>
+
+                {currentStore.phone && (
+                  <a
+                    href={`tel:${currentStore.phone}`}
+                    className="bg-white/15 hover:bg-white/25 text-white font-bold text-xs px-2.5 py-1.5 rounded-sm border border-white/20 flex items-center gap-1.5 transition-colors"
+                    title="Call Store"
+                  >
+                    <Phone className="w-3.5 h-3.5 text-emerald-300" />
+                    <span className="hidden sm:inline">Call</span>
+                  </a>
+                )}
+              </>
+            )}
+
+            <Link href="/" className="text-xs font-bold text-white hover:text-blue-100 hidden sm:inline">
               Home
             </Link>
           </div>
@@ -625,46 +933,74 @@ export default function StoreDetailPage() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 pt-4 space-y-6">
-        {/* 2. STORE BANNER TOP (User Request: "open shopper store banner top") */}
-        <div className="bg-white rounded-xl shadow-md border border-slate-200 overflow-hidden relative">
-            {currentStore.bannerImg ? (
-              <Image
-                src={currentStore.bannerImg}
-                alt={currentStore.name}
-                fill
-                priority
-                unoptimized={currentStore.bannerImg.startsWith('http')}
-                className="object-cover object-center"
-              />
-            ) : (
-              <div className="w-full h-full bg-gradient-to-r from-blue-900 to-indigo-950 flex items-center justify-center">
-                <Store className="w-16 h-16 text-blue-300/40" />
-              </div>
+        {/* 2. STORE BANNER TOP CARD (Dynamic from Supabase `stores` table) */}
+        <div className="bg-white rounded-xl shadow-md border border-slate-200 overflow-hidden">
+          <div className="relative min-h-[300px] sm:min-h-[320px] w-full overflow-hidden bg-slate-900">
+            {/* Store Banner Image (Always visible with high quality fallback) */}
+            <Image
+              src={currentStore.bannerImg || '/hero-dukandar.jpg'}
+              alt={currentStore.name}
+              fill
+              priority
+              unoptimized={(currentStore.bannerImg || '/hero-dukandar.jpg').startsWith('http')}
+              className="object-cover object-center"
+            />
+
+            {/* Quick 1-Tap Change Banner Button (Visible ONLY to Store Owner) */}
+            {isStoreOwner && (
+              <label
+                className="absolute top-4 left-4 z-20 bg-black/60 hover:bg-black/80 backdrop-blur-xs text-white text-xs font-bold px-3 py-1.5 rounded-lg border border-white/30 cursor-pointer flex items-center gap-1.5 transition-colors shadow-md"
+                title="Upload / Change Store Banner"
+              >
+                <Upload className="w-3.5 h-3.5 text-[#ffe500]" />
+                <span>{uploadingBanner ? 'Uploading...' : 'Change Banner'}</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleBannerUpload}
+                  disabled={uploadingBanner}
+                  className="hidden"
+                />
+              </label>
             )}
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/40 to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/60 to-slate-950/20" />
 
             {/* Top Right Distance & Status Badges */}
-            <div className="absolute top-4 right-4 flex flex-col items-end gap-2">
+            <div className="absolute top-4 right-4 flex flex-col items-end gap-2 z-10">
               <span className="bg-white/95 backdrop-blur text-slate-900 font-black text-xs px-3 py-1.5 rounded-sm shadow-md">
                 📍 {currentStore.distanceKm} km door ({currentStore.walkMinutes} mins walk)
               </span>
 
-              <span
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded text-xs font-black shadow ${currentStore.badgeBg}`}
-              >
-                <span className="w-2 h-2 rounded-full bg-white live-indicator" />
-                <span>{currentStore.statusBadge}</span>
-              </span>
+              {isStoreOwner ? (
+                <button
+                  onClick={handleToggleLiveStatus}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded text-xs font-black shadow cursor-pointer transition-transform hover:scale-105 ${currentStore.badgeBg}`}
+                  title="Click to toggle store open/close status in Supabase"
+                >
+                  <span className="w-2 h-2 rounded-full bg-white live-indicator" />
+                  <span>{currentStore.statusBadge}</span>
+                </button>
+              ) : (
+                <div
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded text-xs font-black shadow ${currentStore.badgeBg}`}
+                >
+                  <span
+                    className={`w-2 h-2 rounded-full bg-white ${currentStore.isLiveOpen ? 'live-indicator animate-pulse' : ''
+                      }`}
+                  />
+                  <span>{currentStore.statusBadge}</span>
+                </div>
+              )}
             </div>
 
             {/* Banner Bottom Information */}
-            <div className="absolute bottom-4 left-4 right-4 sm:bottom-6 sm:left-6 sm:right-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-              <div>
+            <div className="absolute bottom-4 left-4 right-4 sm:bottom-6 sm:left-6 sm:right-6 flex flex-col sm:flex-row sm:items-end justify-between gap-4 z-10">
+              <div className="max-w-2xl">
                 <span className="bg-[#ffe500] text-[#2874f0] font-black text-[10px] uppercase tracking-wider px-2 py-0.5 rounded inline-block mb-1 shadow-xs">
-                  {currentStore.badgeTitle}
+                  {currentStore.category}
                 </span>
 
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                   <h1 className="text-2xl sm:text-3xl font-black text-white drop-shadow-md">
                     {currentStore.name}
                   </h1>
@@ -672,6 +1008,15 @@ export default function StoreDetailPage() {
                     <span>{currentStore.rating}</span>
                     <Star className="w-3 h-3 fill-current" />
                   </span>
+                  {isStoreOwner && (
+                    <button
+                      onClick={handleOpenStoreEdit}
+                      className="bg-white/20 hover:bg-white/30 text-white text-[11px] font-bold px-2 py-0.5 rounded border border-white/30 flex items-center gap-1"
+                    >
+                      <Edit2 className="w-3 h-3" />
+                      <span>Edit Info</span>
+                    </button>
+                  )}
                 </div>
 
                 <p className="text-xs sm:text-sm text-slate-200 mt-1 flex items-center gap-1.5 drop-shadow-xs">
@@ -686,42 +1031,50 @@ export default function StoreDetailPage() {
               </div>
 
               {/* Direct Communication Buttons */}
-              <div className="flex items-center gap-2 flex-shrink-0">
+              <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
                 <a
-                  href={`https://www.google.com/maps/dir/?api=1&origin=28.5355,77.2090&destination=${encodeURIComponent(currentStore.name + ', ' + currentStore.address)}&travelmode=walking`}
+                  href={`https://www.google.com/maps/dir/?api=1&origin=28.5355,77.2090&destination=${encodeURIComponent(
+                    currentStore.name + ', ' + currentStore.address
+                  )}&travelmode=walking`}
                   target="_blank"
                   rel="noreferrer"
-                  className="px-3.5 py-2.5 rounded-sm bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors"
+                  className="px-3 py-2 rounded-sm bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors"
                   title="Open Google Maps Walking Navigation"
                 >
                   <Navigation2 className="w-4 h-4 animate-pulse" />
-                  <span>Google Maps ({currentStore.distanceKm} km)</span>
+                  <span>Google Maps</span>
                 </a>
 
                 <button
-                  onClick={() => setShowChatModal(true)}
-                  className="px-3.5 py-2.5 rounded-sm bg-[#2874f0] hover:bg-[#1759c9] text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors"
+                  onClick={() => handleOpenLiveChat()}
+                  className="px-3 py-2 rounded-sm bg-[#2874f0] hover:bg-[#1759c9] text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors"
                 >
                   <MessageSquare className="w-4 h-4" />
                   <span>Live Chat</span>
                 </button>
 
-                <a
-                  href={`tel:${currentStore.phone}`}
-                  className="px-3.5 py-2.5 rounded-sm bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors"
-                >
-                  <Phone className="w-4 h-4 text-[#2874f0]" />
-                  <span>Call Store</span>
-                </a>
+                {currentStore.phone && (
+                  <a
+                    href={`tel:${currentStore.phone}`}
+                    className="px-3 py-2 rounded-sm bg-white hover:bg-slate-100 text-slate-900 font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors"
+                  >
+                    <Phone className="w-4 h-4 text-[#2874f0]" />
+                    <span>Call Store</span>
+                  </a>
+                )}
 
-                <a
-                  href={`https://wa.me/${currentStore.whatsapp.replace(/[^0-9]/g, '')}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-3.5 py-2.5 rounded-sm bg-[#25D366] hover:bg-[#1eb855] text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors"
-                >
-                  <span>WhatsApp</span>
-                </a>
+                {currentStore.whatsapp && (
+                  <a
+                    href={`https://wa.me/${currentStore.whatsapp.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
+                      `Namaste, I am contacting ${currentStore.name} via Dukan Bari!`
+                    )}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-2 rounded-sm bg-[#25D366] hover:bg-[#1eb855] text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-colors"
+                  >
+                    <span>WhatsApp</span>
+                  </a>
+                )}
               </div>
             </div>
           </div>
@@ -734,19 +1087,19 @@ export default function StoreDetailPage() {
                 <span>Special Promotion: {currentStore.activeDeal}</span>
               </div>
               <span className="text-[10px] bg-[#ea580c] text-white px-2 py-0.5 rounded">
-                Valid Today
+                Verified Deal
               </span>
             </div>
           )}
 
-          {/* Vocal for Local & Digital India Trust Guarantee Strip */}
+          {/* Vocal for Local Trust Strip */}
           <div className="bg-gradient-to-r from-orange-50 via-white to-emerald-50 border-t border-orange-200/80 px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
             <div className="flex items-center gap-2">
               <span className="px-2 py-0.5 rounded bg-orange-600 text-white font-black text-[10px] tracking-wide uppercase shadow-xs">
                 🇮🇳 Vocal for Local
               </span>
               <span className="font-extrabold text-slate-800">
-                “Local Khareedo, Desh Badhao” — 100% Paisa Mohalle Ke Vyapari Ke Paas!
+                “Local Khareedo, Desh Badhao” — Direct Verified Neighborhood Dukandar!
               </span>
             </div>
             <div className="flex items-center gap-4 text-[11px] text-slate-600 font-bold">
@@ -755,16 +1108,16 @@ export default function StoreDetailPage() {
                 <span>0% Commission</span>
               </span>
               <span className="flex items-center gap-1 text-blue-700">
-                <span>📲 Direct Bank UPI</span>
+                <span>📲 Instant Counter Sync</span>
               </span>
               <span className="flex items-center gap-1 text-orange-700">
-                <span>⚡ 5-Min Counter Pickup</span>
+                <span>⚡ Real-Time Counter Pickup</span>
               </span>
             </div>
           </div>
         </div>
 
-        {/* 3. CLICKED PRODUCT PINNED ON TOP (User Request: "product image , product deatsils , instock - available status price show thavu jote ama") */}
+        {/* 3. SPOTLIGHT ITEM (If products exist) */}
         {spotlightItem && (
           <div className="bg-gradient-to-r from-amber-50/90 via-white to-orange-50/90 rounded-2xl border-2 border-amber-300 p-5 shadow-sm space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200/60 pb-3">
@@ -774,10 +1127,22 @@ export default function StoreDetailPage() {
                   Spotlight Item (Selected & Pinned on Top)
                 </span>
               </div>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black text-emerald-800 bg-emerald-100 border border-emerald-300 shadow-2xs">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>{spotlightItem.stockStatusText || '✓ In Stock - Available at Store Counter Now'}</span>
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black text-emerald-800 bg-emerald-100 border border-emerald-300 shadow-2xs">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>{spotlightItem.stockStatusText || (spotlightItem.inStock ? '✓ In Stock - Available at Store Counter' : 'Out of Stock')}</span>
+                </span>
+                {isStoreOwner && (
+                  <button
+                    onClick={() => handleOpenEditProduct(spotlightItem)}
+                    className="bg-amber-100 hover:bg-amber-200 text-amber-900 text-xs font-bold px-2.5 py-1 rounded-md border border-amber-300 flex items-center gap-1"
+                    title="Edit this item in Supabase"
+                  >
+                    <Edit2 className="w-3 h-3" />
+                    <span>Edit in Supabase</span>
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-5">
@@ -788,13 +1153,14 @@ export default function StoreDetailPage() {
                     src={spotlightItem.image}
                     alt={spotlightItem.name}
                     fill
+                    unoptimized={spotlightItem.image.startsWith('http')}
                     className="object-cover"
                   />
-                  {spotlightItem.discountPercent && (
+                  {spotlightItem.discountPercent ? (
                     <span className="absolute top-2 left-2 bg-[#fb641b] text-white text-[10px] font-black px-2 py-0.5 rounded shadow">
                       {spotlightItem.discountPercent}% OFF
                     </span>
-                  )}
+                  ) : null}
                 </div>
 
                 {/* Product Details */}
@@ -816,35 +1182,21 @@ export default function StoreDetailPage() {
                     {spotlightItem.description}
                   </p>
 
-                  {/* Specifications / Features pills */}
-                  {spotlightItem.specs && spotlightItem.specs.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      {spotlightItem.specs.map((spec, sIdx) => (
-                        <span
-                          key={sIdx}
-                          className="text-[11px] bg-amber-100/70 border border-amber-200 text-amber-900 px-2 py-0.5 rounded font-bold"
-                        >
-                          ✓ {spec}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
                   {/* Price display with MRP comparison */}
-                  <div className="flex items-baseline gap-2.5 pt-1.5">
+                  <div className="flex items-baseline gap-2.5 pt-1.5 flex-wrap">
                     <span className="text-2xl sm:text-3xl font-black text-slate-900">
                       ₹{spotlightItem.price}
                     </span>
-                    {spotlightItem.mrp && (
+                    {spotlightItem.mrp && spotlightItem.mrp > spotlightItem.price && (
                       <span className="text-sm text-slate-400 line-through">
                         MRP ₹{spotlightItem.mrp}
                       </span>
                     )}
-                    {spotlightItem.discountPercent && (
+                    {spotlightItem.discountPercent && spotlightItem.discountPercent > 0 ? (
                       <span className="text-xs text-emerald-700 font-extrabold bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
                         Save ₹{(spotlightItem.mrp || spotlightItem.price) - spotlightItem.price} ({spotlightItem.discountPercent}% OFF)
                       </span>
-                    )}
+                    ) : null}
                     <span className="text-xs font-semibold text-slate-500">
                       per {spotlightItem.unitOrDuration}
                     </span>
@@ -855,261 +1207,787 @@ export default function StoreDetailPage() {
               {/* Action buttons */}
               <div className="flex flex-row md:flex-col gap-2.5 flex-shrink-0 w-full md:w-auto">
                 <button
-                  onClick={() => setShowChatModal(true)}
+                  onClick={() => handleOpenChatForItem(spotlightItem.name, spotlightItem.price)}
                   className="flex-1 md:flex-none px-6 py-3 rounded-lg bg-[#fb641b] hover:bg-[#e65100] text-white text-xs font-black uppercase tracking-wider shadow-md transition-all flex items-center justify-center gap-2"
                 >
                   <MessageSquare className="w-4 h-4" />
                   <span>Enquire Availability (Order Karein)</span>
                 </button>
-                <a
-                  href={`https://wa.me/${currentStore.whatsapp.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(`Namaste, is ${spotlightItem.name} available at counter?`)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex-1 md:flex-none px-5 py-2.5 rounded-lg bg-[#25D366] hover:bg-[#1eb855] text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-sm transition-colors"
-                >
-                  <span>Chat on WhatsApp</span>
-                </a>
+                {currentStore.whatsapp && (
+                  <a
+                    href={`https://wa.me/${currentStore.whatsapp.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(
+                      `Namaste, is ${spotlightItem.name} (₹${spotlightItem.price}) available at counter right now?`
+                    )}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 md:flex-none px-5 py-2.5 rounded-lg bg-[#25D366] hover:bg-[#1eb855] text-white text-xs font-black flex items-center justify-center gap-1.5 shadow-sm transition-colors"
+                  >
+                    <span>Chat on WhatsApp</span>
+                  </a>
+                )}
               </div>
             </div>
           </div>
         )}
 
-        {/* 4. IN-STORE SEARCH BAR & CATEGORY TABS (User Request: "search product on top after other all product and service show") */}
+        {/* 4. IN-STORE SEARCH BAR, DYNAMIC CATEGORY TABS & PRODUCT LIST (FROM SUPABASE) */}
         <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-5 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h2 className="text-lg font-black text-slate-900">
-                Full Store Catalogue & Service Offerings
-              </h2>
+              <div className="flex items-center gap-2.5">
+                <h2 className="text-lg font-black text-slate-900">
+                  Store Catalogue & Services
+                </h2>
+                <span className="bg-blue-100 text-[#2874f0] text-xs font-bold px-2 py-0.5 rounded-full">
+                  {filteredCatalog.length} items from Supabase
+                </span>
+              </div>
               <p className="text-xs text-slate-500">
-                Browse all verified products with photos, counter rates, in-stock availability and specifications.
+                Directly connected to Supabase `products` table with live counter rates and availability.
               </p>
             </div>
 
-            {/* In-Store Search Bar */}
-            <div className="relative w-full sm:w-72">
-              <input
-                type="text"
-                value={inStoreSearch}
-                onChange={(e) => setInStoreSearch(e.target.value)}
-                placeholder="Search products, services, rates..."
-                className="w-full bg-[#f8fafc] text-slate-900 text-xs pl-9 pr-4 py-2.5 rounded border border-slate-300 focus:outline-none focus:border-[#2874f0]"
-              />
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+            {/* In-Store Search Bar & + Add Item button */}
+            <div className="flex items-center gap-2">
+              <div className="relative w-full sm:w-64">
+                <input
+                  type="text"
+                  value={inStoreSearch}
+                  onChange={(e) => setInStoreSearch(e.target.value)}
+                  placeholder="Search products, services, rates..."
+                  className="w-full bg-[#f8fafc] text-slate-900 text-xs pl-9 pr-4 py-2 rounded border border-slate-300 focus:outline-none focus:border-[#2874f0]"
+                />
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+              </div>
+
+              {isStoreOwner && (
+                <button
+                  onClick={handleOpenAddProduct}
+                  className="px-3.5 py-2 bg-[#2874f0] hover:bg-[#1c5fcc] text-white text-xs font-black rounded flex items-center gap-1.5 whitespace-nowrap shadow-xs"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Add Item</span>
+                </button>
+              )}
             </div>
           </div>
 
-          {/* Catalog Categories */}
-          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-100">
-            {catalogCategories.map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveCatalogTab(tab)}
-                className={`px-4 py-2 rounded-t font-bold text-xs whitespace-nowrap transition-colors border-b-2 ${activeCatalogTab === tab
-                  ? 'border-[#2874f0] text-[#2874f0] bg-blue-50/50'
-                  : 'border-transparent text-slate-600 hover:text-slate-900'
-                  }`}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
+          {/* Dynamic Category Tabs */}
+          {catalogCategories.length > 1 && (
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none border-b border-slate-100">
+              {catalogCategories.map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveCatalogTab(tab)}
+                  className={`px-4 py-2 rounded-t font-bold text-xs whitespace-nowrap transition-colors border-b-2 ${activeCatalogTab === tab
+                    ? 'border-[#2874f0] text-[#2874f0] bg-blue-50/50'
+                    : 'border-transparent text-slate-600 hover:text-slate-900'
+                    }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+          )}
 
-          {/* Catalog Items Grid with Product Images, Details, InStock Status, and Price */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 pt-2">
-            {filteredCatalog.map((item) => (
-              <div
-                key={item.id}
-                onClick={() => setSelectedProductHighlight(item.name)}
-                className={`rounded-2xl border transition-all cursor-pointer flex flex-col justify-between overflow-hidden shadow-xs hover:shadow-md hover:border-[#2874f0] bg-white ${selectedProductHighlight === item.name
-                  ? 'border-amber-400 ring-2 ring-amber-300/50'
-                  : 'border-slate-200'
-                  }`}
-              >
-                <div>
-                  {/* 1. PRODUCT IMAGE WITH OVERLAYS */}
-                  <div className="relative h-44 w-full bg-slate-100 overflow-hidden group">
-                    <Image
-                      src={item.image}
-                      alt={item.name}
-                      fill
-                      className="object-cover group-hover:scale-105 transition-transform duration-300"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-slate-900/60 via-transparent to-transparent" />
+          {/* Catalog Items Grid (100% Dynamic from Supabase) */}
+          {filteredCatalog.length === 0 ? (
+            <div className="py-12 text-center space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200">
+              <ShoppingBag className="w-12 h-12 text-slate-300 mx-auto" />
+              <h4 className="text-sm font-bold text-slate-700">No items in store catalogue yet</h4>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                {isStoreOwner
+                  ? 'Add your services, items, rates, and stock status to display them dynamically to customers.'
+                  : "This store hasn't listed any items or services yet. You can chat or call the store directly."}
+              </p>
+              {isStoreOwner ? (
+                <button
+                  onClick={handleOpenAddProduct}
+                  className="px-4 py-2 bg-[#2874f0] hover:bg-[#1c5fcc] text-white text-xs font-bold rounded shadow-xs inline-flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>+ Add First Item to Supabase</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleOpenLiveChat()}
+                  className="px-4 py-2 bg-[#2874f0] hover:bg-[#1c5fcc] text-white text-xs font-bold rounded shadow-xs inline-flex items-center gap-1.5"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Ask Store on Live Chat</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 pt-2">
+              {filteredCatalog.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => setSelectedProductHighlight(item.name)}
+                  className={`rounded-2xl border transition-all cursor-pointer flex flex-col justify-between overflow-hidden shadow-xs hover:shadow-md hover:border-[#2874f0] bg-white group ${selectedProductHighlight === item.name
+                    ? 'border-amber-400 ring-2 ring-amber-300/50'
+                    : 'border-slate-200'
+                    }`}
+                >
+                  <div>
+                    {/* 1. PRODUCT IMAGE WITH OVERLAYS & CRUD BUTTONS */}
+                    <div className="relative h-44 w-full bg-slate-100 overflow-hidden">
+                      <Image
+                        src={item.image}
+                        alt={item.name}
+                        fill
+                        unoptimized={item.image.startsWith('http')}
+                        className="object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-t from-slate-900/60 via-transparent to-transparent" />
 
-                    {/* Discount badge */}
-                    {item.discountPercent && (
-                      <span className="absolute top-2.5 left-2.5 bg-[#fb641b] text-white text-[10px] font-black px-2 py-0.5 rounded shadow">
-                        {item.discountPercent}% OFF
-                      </span>
-                    )}
-
-                    {/* Category Tag */}
-                    <span className="absolute top-2.5 right-2.5 bg-white/95 backdrop-blur text-slate-900 text-[10px] font-black px-2 py-0.5 rounded shadow">
-                      {item.categoryTag}
-                    </span>
-
-                    {/* Quick highlight banner if spotlighted */}
-                    {selectedProductHighlight === item.name && (
-                      <span className="absolute bottom-2 left-2 bg-[#ffe500] text-[#1e3a8a] text-[10px] font-black px-2 py-0.5 rounded shadow">
-                        ⭐ Selected Item
-                      </span>
-                    )}
-                  </div>
-
-                  {/* 2. PRODUCT DETAILS & IN-STOCK STATUS */}
-                  <div className="p-4 space-y-2">
-                    {/* In-Stock Available Status */}
-                    <div className="flex items-center justify-between">
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                        <span>{item.stockStatusText || (item.inStock ? 'In Stock - Available Now' : 'Out of Stock')}</span>
-                      </span>
-
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                        {item.itemType}
-                      </span>
-                    </div>
-
-                    {/* Product Name */}
-                    <h4 className="font-black text-base text-slate-900 leading-snug hover:text-[#2874f0] transition-colors">
-                      {item.name}
-                    </h4>
-
-                    {/* Product Description */}
-                    <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
-                      {item.description}
-                    </p>
-
-                    {/* Product Specifications */}
-                    {item.specs && item.specs.length > 0 && (
-                      <div className="flex flex-wrap gap-1 pt-1">
-                        {item.specs.map((spec, sIdx) => (
-                          <span
-                            key={sIdx}
-                            className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-semibold"
-                          >
-                            ✓ {spec}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 3. PRICE SECTION & ORDER BUTTON */}
-                <div className="p-4 pt-0 border-t border-slate-100 mt-2">
-                  <div className="flex items-end justify-between pt-3">
-                    <div>
-                      <div className="flex items-baseline gap-1.5">
-                        <span className="text-xl font-black text-slate-900">
-                          ₹{item.price}
+                      {/* Discount badge */}
+                      {item.discountPercent && item.discountPercent > 0 ? (
+                        <span className="absolute top-2.5 left-2.5 bg-[#fb641b] text-white text-[10px] font-black px-2 py-0.5 rounded shadow">
+                          {item.discountPercent}% OFF
                         </span>
-                        {item.mrp && (
-                          <span className="text-xs text-slate-400 line-through">
-                            ₹{item.mrp}
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-[10px] text-slate-500 block leading-none font-bold">
-                        {item.unitOrDuration}
+                      ) : null}
+
+                      {/* Category Tag */}
+                      <span className="absolute top-2.5 right-2.5 bg-white/95 backdrop-blur text-slate-900 text-[10px] font-black px-2 py-0.5 rounded shadow">
+                        {item.categoryTag}
                       </span>
+
+                      {/* Floating CRUD Actions on Item Card - ONLY visible to verified store owner */}
+                      {isStoreOwner && (
+                        <div className="absolute top-2.5 right-24 sm:right-28 flex items-center gap-1 z-10 opacity-90 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenEditProduct(item);
+                            }}
+                            className="p-1.5 bg-white/90 hover:bg-white text-slate-800 rounded shadow-md transition-colors"
+                            title="Edit in Supabase"
+                          >
+                            <Edit2 className="w-3.5 h-3.5 text-[#2874f0]" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteProduct(item.id, item.name);
+                            }}
+                            className="p-1.5 bg-white/90 hover:bg-rose-50 text-rose-600 rounded shadow-md transition-colors"
+                            title="Delete from Supabase"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Quick highlight banner if spotlighted */}
+                      {selectedProductHighlight === item.name && (
+                        <span className="absolute bottom-2 left-2 bg-[#ffe500] text-[#1e3a8a] text-[10px] font-black px-2 py-0.5 rounded shadow">
+                          ⭐ Selected Item
+                        </span>
+                      )}
                     </div>
 
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowChatModal(true);
-                      }}
-                      className="px-4 py-2 bg-[#2874f0] hover:bg-[#1759c9] text-white text-xs font-black rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
-                    >
-                      <ShoppingBag className="w-3.5 h-3.5" />
-                      <span>{item.itemType === 'service' ? 'Consult Now' : 'Order Item'}</span>
-                    </button>
+                    {/* 2. PRODUCT DETAILS & IN-STOCK STATUS */}
+                    <div className="p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black border ${item.inStock
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-rose-50 text-rose-700 border-rose-200'
+                            }`}
+                        >
+                          <span
+                            className={`w-2 h-2 rounded-full ${item.inStock ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'
+                              }`}
+                          />
+                          <span>
+                            {item.stockStatusText || (item.inStock ? 'In Stock - Ready at Counter' : 'Out of Stock')}
+                          </span>
+                        </span>
+
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                          {item.itemType}
+                        </span>
+                      </div>
+
+                      <h4 className="font-black text-base text-slate-900 leading-snug hover:text-[#2874f0] transition-colors">
+                        {item.name}
+                      </h4>
+
+                      <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
+                        {item.description}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 3. PRICE SECTION & ORDER BUTTON */}
+                  <div className="p-4 pt-0 border-t border-slate-100 mt-2">
+                    <div className="flex items-end justify-between pt-3">
+                      <div>
+                        <div className="flex items-baseline gap-1.5">
+                          <span className="text-xl font-black text-slate-900">
+                            ₹{item.price}
+                          </span>
+                          {item.mrp && item.mrp > item.price && (
+                            <span className="text-xs text-slate-400 line-through">
+                              ₹{item.mrp}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-500 block leading-none font-bold">
+                          {item.unitOrDuration}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleOpenChatForItem(item.name, item.price);
+                          }}
+                          className="px-3.5 py-2 bg-[#2874f0] hover:bg-[#1759c9] text-white text-xs font-black rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
+                        >
+                          <ShoppingBag className="w-3.5 h-3.5" />
+                          <span>{item.itemType === 'service' ? 'Consult' : 'Order'}</span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* 5. About Business & Verified Credentials */}
         <div className="bg-white rounded-xl shadow-xs border border-slate-200 p-6 space-y-3">
-          <h3 className="text-base font-black text-slate-900">About {currentStore.name}</h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-base font-black text-slate-900">About {currentStore.name}</h3>
+            {isStoreOwner && (
+              <button
+                onClick={handleOpenStoreEdit}
+                className="text-xs font-bold text-[#2874f0] hover:underline flex items-center gap-1"
+              >
+                <Edit2 className="w-3 h-3" />
+                <span>Edit About Info</span>
+              </button>
+            )}
+          </div>
           <p className="text-xs text-slate-600 leading-relaxed max-w-4xl">
             {currentStore.aboutText}
           </p>
           <div className="pt-3 border-t border-slate-100 flex flex-wrap gap-4 text-xs text-slate-600">
             <span className="flex items-center gap-1 text-emerald-700 font-bold">
-              <CheckCircle className="w-4 h-4" /> Verified Local Merchant Account
+              <CheckCircle className="w-4 h-4" /> Supabase Synchronized Storefront
             </span>
             <span className="flex items-center gap-1 text-blue-700 font-bold">
               <CheckCircle className="w-4 h-4" /> 0% Platform Commission Counter
             </span>
             <span className="flex items-center gap-1 text-slate-700 font-bold">
-              <CheckCircle className="w-4 h-4" /> Direct Instant WhatsApp & Phone
+              <CheckCircle className="w-4 h-4" /> Direct WhatsApp & Instant Phone Connect
             </span>
           </div>
         </div>
       </main>
 
-      {/* 6. Direct 1-to-1 Live Chat Modal */}
-      {showChatModal && (
+      {/* -------------------------------------------------------------
+          MODAL 1: EDIT STORE DETAILS (SYNC WITH SUPABASE `stores` TABLE)
+         ------------------------------------------------------------- */}
+      {showStoreEditModal && isStoreOwner && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl max-w-md w-full h-[520px] flex flex-col shadow-2xl overflow-hidden">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
             <div className="p-4 bg-[#2874f0] text-white flex items-center justify-between">
-              <div>
-                <h4 className="text-sm font-black">{currentStore.name}</h4>
-                <span className="text-[10px] text-emerald-200 font-bold flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
-                  <span>Direct Socket Live Active · {currentStore.distanceKm} km door</span>
-                </span>
+              <div className="flex items-center gap-2">
+                <Store className="w-5 h-5 text-[#ffe500]" />
+                <h3 className="text-base font-black">Edit Store (Syncs with Supabase)</h3>
               </div>
               <button
-                onClick={() => setShowChatModal(false)}
-                className="text-white hover:text-slate-200"
+                onClick={() => setShowStoreEditModal(false)}
+                className="text-white hover:text-slate-200 p-1"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="flex-1 p-4 overflow-y-auto space-y-3 bg-[#f8fafc]">
-              {chatMessages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`max-w-[80%] p-3 rounded-lg text-xs ${msg.sender === 'user'
-                      ? 'bg-[#2874f0] text-white'
-                      : 'bg-white text-slate-800 border border-slate-200 shadow-xs'
-                      }`}
-                  >
-                    <p>{msg.text}</p>
-                    <span className={`text-[9px] block text-right mt-1 ${msg.sender === 'user' ? 'text-blue-100' : 'text-slate-400'}`}>
-                      {msg.time}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <form onSubmit={handleSaveStoreDetails} className="p-5 overflow-y-auto space-y-4 flex-1">
+              <div>
+                <label className="text-xs font-black text-slate-700 block mb-1">
+                  Store / Business Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={storeEditName}
+                  onChange={(e) => setStoreEditName(e.target.value)}
+                  className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                  placeholder="e.g. Champion Hair Art"
+                />
+              </div>
 
-            <form onSubmit={handleSendMessage} className="p-3 border-t border-slate-200 bg-white flex gap-2">
-              <input
-                type="text"
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                placeholder="Ask price quote, consultation or pickup..."
-                className="flex-1 px-3 py-2 text-xs rounded border border-slate-300 focus:outline-none focus:border-[#2874f0]"
-              />
-              <button
-                type="submit"
-                className="px-4 py-2 rounded bg-[#fb641b] hover:bg-[#e65100] text-white font-bold text-xs"
-              >
-                Send
-              </button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    Category Tag *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={storeEditCategory}
+                    onChange={(e) => setStoreEditCategory(e.target.value)}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                    placeholder="e.g. Hair Saloon & Grooming"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    Badge Title
+                  </label>
+                  <input
+                    type="text"
+                    value={storeEditBadgeTitle}
+                    onChange={(e) => setStoreEditBadgeTitle(e.target.value)}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                    placeholder="e.g. Hair Saloon"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-black text-slate-700 block mb-1">
+                  Address Line *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={storeEditAddress}
+                  onChange={(e) => setStoreEditAddress(e.target.value)}
+                  className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                  placeholder="e.g. Surat Main Road"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    City *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={storeEditCity}
+                    onChange={(e) => setStoreEditCity(e.target.value)}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                    placeholder="Surat"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    Pincode *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={storeEditPincode}
+                    onChange={(e) => setStoreEditPincode(e.target.value)}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                    placeholder="395004"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    Phone Contact *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={storeEditPhone}
+                    onChange={(e) => setStoreEditPhone(e.target.value)}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                    placeholder="9925299431"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    WhatsApp Number
+                  </label>
+                  <input
+                    type="text"
+                    value={storeEditWhatsapp}
+                    onChange={(e) => setStoreEditWhatsapp(e.target.value)}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                    placeholder="9925299431"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-black text-slate-700 block mb-1">
+                  Working Hours
+                </label>
+                <input
+                  type="text"
+                  value={storeEditWorkingHours}
+                  onChange={(e) => setStoreEditWorkingHours(e.target.value)}
+                  className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                  placeholder="08:30 AM - 10:00 PM"
+                />
+              </div>
+
+              {/* Banner Image with Supabase Storage Upload */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                <label className="text-xs font-black text-slate-700 block">
+                  Store Banner Image
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={storeEditBannerImg}
+                    onChange={(e) => setStoreEditBannerImg(e.target.value)}
+                    className="flex-1 text-xs px-3 py-2 border rounded-lg bg-white focus:outline-none"
+                    placeholder="Image URL or upload below"
+                  />
+                  <label className="px-3 py-2 bg-[#2874f0] hover:bg-[#1c5fcc] text-white text-xs font-bold rounded-lg cursor-pointer flex items-center gap-1">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>{uploadingBanner ? 'Uploading...' : 'Upload'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleBannerUpload}
+                      disabled={uploadingBanner}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+                <p className="text-[10px] text-slate-500">
+                  Upload directly to Supabase `{SUPABASE_STORE_BUCKET}/banners` bucket.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-black text-slate-700 block mb-1">
+                  About Business Description
+                </label>
+                <textarea
+                  rows={3}
+                  value={storeEditAboutText}
+                  onChange={(e) => setStoreEditAboutText(e.target.value)}
+                  className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                  placeholder="Tell customers about your services, experience, specialties..."
+                />
+              </div>
+
+              <div className="pt-3 border-t flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowStoreEditModal(false)}
+                  className="px-4 py-2 border text-slate-700 text-xs font-bold rounded-lg hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-[#2874f0] hover:bg-[#1c5fcc] text-white text-xs font-black rounded-lg shadow-sm flex items-center gap-1.5"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>Save Changes</span>
+                </button>
+              </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          MODAL 2: ADD / EDIT PRODUCT OR SERVICE (SYNC WITH SUPABASE `products` TABLE)
+         ------------------------------------------------------------- */}
+      {showProductModal && isStoreOwner && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
+            <div className="p-4 bg-[#2874f0] text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-[#ffe500]" />
+                <h3 className="text-base font-black">
+                  {editingProductId ? 'Edit Item in Supabase' : 'Add Item to Supabase'}
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowProductModal(false)}
+                className="text-white hover:text-slate-200 p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveProduct} className="p-5 overflow-y-auto space-y-4 flex-1">
+              <div>
+                <label className="text-xs font-black text-slate-700 block mb-1">
+                  Item Title / Service Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={prodFormName}
+                  onChange={(e) => setProdFormName(e.target.value)}
+                  className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                  placeholder="e.g. Hair Cut & Beard Styling, Facial Treatment"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    Offering Type *
+                  </label>
+                  <select
+                    value={prodFormType}
+                    onChange={(e) => setProdFormType(e.target.value as 'product' | 'service')}
+                    className="w-full text-xs px-3 py-2 border rounded-lg bg-white focus:outline-none"
+                  >
+                    <option value="service">Service / Consultation</option>
+                    <option value="product">Physical Item / Goods</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    Category / Tag *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={prodFormTag}
+                    onChange={(e) => setProdFormTag(e.target.value)}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                    placeholder="e.g. Hair Care, Facial, Shave"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    Selling Price (₹) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min={0}
+                    value={prodFormPrice}
+                    onChange={(e) => setProdFormPrice(Number(e.target.value))}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    MRP (₹)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={prodFormMrp}
+                    onChange={(e) => setProdFormMrp(Number(e.target.value))}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-black text-slate-700 block mb-1">
+                    Unit / Session *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={prodFormUnit}
+                    onChange={(e) => setProdFormUnit(e.target.value)}
+                    className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                    placeholder="1 Session, 1 Unit"
+                  />
+                </div>
+              </div>
+
+              {/* In-Stock Status Controls */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-slate-700">Counter Availability:</span>
+                  <label className="flex items-center gap-2 cursor-pointer text-xs font-bold">
+                    <input
+                      type="checkbox"
+                      checked={prodFormInStock}
+                      onChange={(e) => setProdFormInStock(e.target.checked)}
+                      className="w-4 h-4 text-[#2874f0] rounded"
+                    />
+                    <span>{prodFormInStock ? 'Available at Counter' : 'Unavailable'}</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Product Image with Supabase Storage Upload */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
+                <label className="text-xs font-black text-slate-700 block">
+                  Item Image Photo
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={prodFormImage}
+                    onChange={(e) => setProdFormImage(e.target.value)}
+                    className="flex-1 text-xs px-3 py-2 border rounded-lg bg-white focus:outline-none"
+                    placeholder="/grocery-product.jpg or https://..."
+                  />
+                  <label className="px-3 py-2 bg-[#2874f0] hover:bg-[#1c5fcc] text-white text-xs font-bold rounded-lg cursor-pointer flex items-center gap-1">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>{uploadingProductImg ? 'Uploading...' : 'Upload'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleProductImageUpload}
+                      disabled={uploadingProductImg}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+                <p className="text-[10px] text-slate-500">
+                  Upload directly to Supabase `{SUPABASE_STORE_BUCKET}/products` bucket.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-black text-slate-700 block mb-1">
+                  Description
+                </label>
+                <textarea
+                  rows={2}
+                  value={prodFormDesc}
+                  onChange={(e) => setProdFormDesc(e.target.value)}
+                  className="w-full text-xs px-3 py-2 border rounded-lg focus:border-[#2874f0] focus:outline-none"
+                  placeholder="Details about this service or item..."
+                />
+              </div>
+
+              <div className="pt-3 border-t flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowProductModal(false)}
+                  className="px-4 py-2 border text-slate-700 text-xs font-bold rounded-lg hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-[#2874f0] hover:bg-[#1c5fcc] text-white text-xs font-black rounded-lg shadow-sm flex items-center gap-1.5"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{editingProductId ? 'Update Item' : 'Add to Catalog'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------------
+          MODAL 3: DIRECT 1-TO-1 LIVE CHAT MODAL
+         ------------------------------------------------------------- */}
+      {showChatModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          {!user ? (
+            <div className="bg-white rounded-xl max-w-sm w-full p-6 text-center shadow-2xl animate-in fade-in zoom-in-95">
+              <div className="w-12 h-12 rounded-full bg-blue-100 text-[#2874f0] mx-auto flex items-center justify-center mb-3">
+                <Lock className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-slate-900 text-base mb-1">Login Required</h4>
+              <p className="text-xs text-slate-600 mb-5 leading-relaxed">
+                Please log in or create an account to start direct live messaging with <strong>{currentStore.name}</strong>.
+              </p>
+              <div className="flex gap-2">
+                <Link
+                  href={`/login?redirect=${encodeURIComponent(`/store/${storeIdParam || currentStore.id}`)}`}
+                  className="flex-1 py-2.5 bg-[#2874f0] hover:bg-blue-700 text-white rounded-lg font-bold text-xs shadow transition-all text-center flex items-center justify-center"
+                >
+                  Log In / Sign Up
+                </Link>
+                <button
+                  onClick={() => setShowChatModal(false)}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-bold text-xs transition-all"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-white rounded-xl max-w-md w-full h-[520px] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
+              <div className="p-4 bg-[#2874f0] text-white flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-black">{currentStore.name}</h4>
+                  <span className="text-[10px] text-emerald-200 font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" />
+                    <span>Direct Socket Live Active · {currentStore.distanceKm} km door</span>
+                  </span>
+                </div>
+                <button
+                  onClick={() => setShowChatModal(false)}
+                  className="text-white hover:text-slate-200 p-1"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 p-4 overflow-y-auto space-y-3 bg-[#f8fafc]">
+                {chatMessages.map((msg, i) => (
+                  <div
+                    key={i}
+                    className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div
+                      className={`max-w-[80%] p-3 rounded-lg text-xs ${msg.sender === 'user'
+                        ? 'bg-[#2874f0] text-white'
+                        : msg.isQuote
+                          ? 'bg-amber-50 text-slate-900 border-2 border-amber-300 shadow-sm'
+                          : 'bg-white text-slate-800 border border-slate-200 shadow-xs'
+                        }`}
+                    >
+                      {msg.isQuote ? (
+                        <div className="font-extrabold text-amber-900">
+                          {msg.text}
+                        </div>
+                      ) : (
+                        <p>{msg.text}</p>
+                      )}
+                      <span
+                        className={`text-[9px] block text-right mt-1 ${msg.sender === 'user' ? 'text-blue-100' : 'text-slate-400'
+                          }`}
+                      >
+                        {msg.time}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <form onSubmit={handleSendMessage} className="p-3 border-t border-slate-200 bg-white flex gap-2">
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Ask price quote, consultation or pickup..."
+                  className="flex-1 px-3 py-2 text-xs rounded border border-slate-300 focus:outline-none focus:border-[#2874f0]"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded bg-[#fb641b] hover:bg-[#e65100] text-white font-bold text-xs"
+                >
+                  Send
+                </button>
+              </form>
+            </div>
+          )}
         </div>
       )}
     </div>
