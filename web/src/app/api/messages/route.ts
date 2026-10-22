@@ -20,7 +20,19 @@ export async function GET(request: Request) {
       return NextResponse.json({ success: false, error: error.message }, { status: 400 });
     }
 
-    return NextResponse.json({ success: true, messages: messages || [] });
+    // Deduplicate any repeated messages (same sender, same content, within 4 seconds)
+    const uniqueMessages = (messages || []).filter((msg, idx, arr) => {
+      const firstIdx = arr.findIndex(
+        (m) =>
+          m.id === msg.id ||
+          (m.sender_id === msg.sender_id &&
+            m.content === msg.content &&
+            Math.abs(new Date(m.created_at).getTime() - new Date(msg.created_at).getTime()) < 4000)
+      );
+      return idx === firstIdx;
+    });
+
+    return NextResponse.json({ success: true, messages: uniqueMessages });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
@@ -39,13 +51,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ success: false, error: 'Authentication required. Sender must be logged in.' }, { status: 401 });
     }
 
+    // Check if duplicate message was posted within 4 seconds
+    const targetContent = content || 'Attachment';
+    const { data: recentDup } = await supabaseAdmin
+      .from('messages')
+      .select('*, users(full_name, role)')
+      .eq('conversation_id', conversation_id)
+      .eq('sender_id', sender_id)
+      .eq('content', targetContent)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (recentDup && (Date.now() - new Date(recentDup.created_at).getTime() < 4000)) {
+      return NextResponse.json({ success: true, message: recentDup });
+    }
+
     const { data: newMessage, error: msgErr } = await supabaseAdmin
       .from('messages')
       .insert({
         conversation_id,
         sender_id,
         message_type,
-        content: content || 'Attachment',
+        content: targetContent,
         media_url: media_url || null,
         metadata: metadata || {},
         is_read: false

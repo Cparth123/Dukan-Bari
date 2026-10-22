@@ -80,6 +80,7 @@ interface RealStore {
   whatsapp: string;
   activeDeal?: string;
   rating: number;
+  reviewsCount?: number;
   bannerImg: string;
   logoImg?: string;
   productImg?: string;
@@ -90,9 +91,23 @@ interface RealStore {
 }
 
 function ExploreContent() {
-  const { user, signOut } = useAuth();
+  const { user, profile, loading: authLoading, signOut } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
+
+  const [authVerified, setAuthVerified] = useState(false);
+
+  // Guard: Without login don't show shop details and list page
+  useEffect(() => {
+    if (authLoading) return;
+    const token = typeof window !== 'undefined' ? (localStorage.getItem('dukan_auth_token') || localStorage.getItem('dukan_admin_token')) : null;
+    const hasActiveUser = Boolean(token && (user || profile || localStorage.getItem('dukan_auth_user')));
+    if (!hasActiveUser) {
+      router.replace('/login?redirect=/explore');
+    } else {
+      setAuthVerified(true);
+    }
+  }, [authLoading, user, profile, router]);
 
   // Mode: List View or Live Map Radar View
   const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
@@ -111,11 +126,6 @@ function ExploreContent() {
   // Selected store for detail / map focus
   const [highlightedStoreId, setHighlightedStoreId] = useState<string | null>(null);
 
-  // Reverse Enquiry Modal
-  const [showEnquiryModal, setShowEnquiryModal] = useState<boolean>(false);
-  const [enquiryTitle, setEnquiryTitle] = useState<string>('');
-  const [enquiryDesc, setEnquiryDesc] = useState<string>('');
-  const [enquirySent, setEnquirySent] = useState<boolean>(false);
 
   // Active Chat Modal with a store
   const [activeChatStore, setActiveChatStore] = useState<RealStore | null>(null);
@@ -258,30 +268,6 @@ function ExploreContent() {
     setActiveChatStore(store);
   };
 
-  const handleOpenBroadcastEnquiry = (prefilledTitle?: string) => {
-    if (!user) {
-      router.push(`/login?redirect=${encodeURIComponent('/explore')}`);
-      return;
-    }
-    if (prefilledTitle) setEnquiryTitle(prefilledTitle);
-    setShowEnquiryModal(true);
-  };
-
-  const handleSendEnquiry = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) {
-      router.push(`/login?redirect=${encodeURIComponent('/explore')}`);
-      return;
-    }
-    if (!enquiryTitle.trim()) return;
-    setEnquirySent(true);
-    setTimeout(() => {
-      setEnquirySent(false);
-      setShowEnquiryModal(false);
-      setEnquiryTitle('');
-      setEnquiryDesc('');
-    }, 2500);
-  };
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -346,6 +332,15 @@ function ExploreContent() {
         : encodeURIComponent(`${store.name}, ${store.address}, ${store.city}`);
     return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=walking`;
   };
+
+  if (authLoading || !authVerified) {
+    return (
+      <div className="min-h-screen bg-[#0b0f19] flex flex-col items-center justify-center text-slate-300 gap-3">
+        <div className="w-8 h-8 border-2 border-[#2874f0] border-t-transparent rounded-full animate-spin" />
+        <p className="text-xs font-bold text-slate-400">Verifying session...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#f1f3f6] pb-16">
@@ -601,7 +596,7 @@ function ExploreContent() {
               </h3>
               <p className="text-xs text-slate-500 max-w-md mx-auto mb-6">
                 There are currently no registered stores or providers under this category within your {radiusKm} km radius.
-                You can expand your distance slider, explore other local categories, or broadcast a reverse enquiry.
+                You can expand your distance slider or explore other local categories.
               </p>
               <div className="flex flex-wrap items-center justify-center gap-3">
                 <button
@@ -610,13 +605,6 @@ function ExploreContent() {
                 >
                   <Eye className="w-4 h-4" />
                   <span>View All Nearby Stores ({stores.length} Available)</span>
-                </button>
-                <button
-                  onClick={() => handleOpenBroadcastEnquiry(`Need ${selectedCategory} service or products`)}
-                  className="bg-[#ffe500] hover:bg-[#ebd300] text-[#2874f0] text-xs font-black px-5 py-2.5 rounded-lg shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>Broadcast Reverse Enquiry to Nearby Dukandars</span>
                 </button>
               </div>
             </div>
@@ -661,6 +649,9 @@ function ExploreContent() {
                             <span className="bg-emerald-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded flex items-center gap-0.5 shadow">
                               <span>{store.rating}</span>
                               <span className="text-[8px]">★</span>
+                              {Boolean(store.reviewsCount && store.reviewsCount > 0) && (
+                                <span className="text-white/70 font-normal ml-0.5">({store.reviewsCount})</span>
+                              )}
                             </span>
                           </div>
                           <span className="text-xs font-bold text-[#ffe500] drop-shadow-xs block">
@@ -817,71 +808,6 @@ function ExploreContent() {
         </div>
       </main>
 
-      {/* Reverse Enquiry Modal */}
-      {showEnquiryModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl max-w-lg w-full p-6 shadow-2xl relative">
-            <button
-              onClick={() => setShowEnquiryModal(false)}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="w-5 h-5 text-[#2874f0]" />
-              <h3 className="text-lg font-black text-slate-900">Broadcast Reverse-Enquiry</h3>
-            </div>
-            <p className="text-xs text-slate-500 mb-5">
-              Post an item or requirement. All physical shops within your {radiusKm} km radius will be alerted immediately!
-            </p>
-
-            <form onSubmit={handleSendEnquiry} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                  Item Name / Service Requirement
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={enquiryTitle}
-                  onChange={(e) => setEnquiryTitle(e.target.value)}
-                  placeholder="e.g. Legal document drafting or Sunflower Oil 5L"
-                  className="w-full px-3.5 py-2.5 rounded border border-slate-300 text-xs focus:outline-none focus:border-[#2874f0]"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                  Specific Details / Urgency Notes (Optional)
-                </label>
-                <textarea
-                  rows={2}
-                  value={enquiryDesc}
-                  onChange={(e) => setEnquiryDesc(e.target.value)}
-                  placeholder="Urgent requirement today, looking for quick quote..."
-                  className="w-full px-3.5 py-2 rounded border border-slate-300 text-xs focus:outline-none focus:border-[#2874f0]"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="w-full py-3 rounded bg-[#fb641b] hover:bg-[#e65100] text-white font-black text-xs uppercase tracking-wider shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Send className="w-4 h-4" />
-                <span>Blast to All {radiusKm}km Shops (Sabhi Dukano Ko Bhejein)</span>
-              </button>
-
-              {enquirySent && (
-                <div className="p-3 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2 font-bold">
-                  <CheckCircle className="w-4 h-4 text-emerald-600" />
-                  <span>Enquiry dispatched! Nearby shopkeepers are receiving alerts on their desk radar.</span>
-                </div>
-              )}
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* 1-to-1 Live Chat Modal */}
       {activeChatStore && (

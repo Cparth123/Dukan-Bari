@@ -68,6 +68,7 @@ export const sendChatMessage = async (payload: {
   mediaUrl?: string;
   metadata?: any;
   senderId?: string;
+  messageId?: string;
 }) => {
   const socket = await getSocket();
   socket.emit('send_message', payload);

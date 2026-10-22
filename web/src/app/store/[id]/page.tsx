@@ -32,6 +32,7 @@ import {
   Lock
 } from 'lucide-react';
 import { uploadImageToSupabase, SUPABASE_STORE_BUCKET } from '@/lib/storage';
+import { supabase } from '@/lib/supabase';
 import {
   getStoreWithProducts,
   syncStoreToSupabase,
@@ -46,6 +47,7 @@ import {
   DbProduct
 } from '@/lib/storeService';
 import { getSocket, joinConversation, sendChatMessage } from '@/lib/socket';
+
 
 export interface CatalogItem {
   id: string;
@@ -98,7 +100,21 @@ export default function StoreDetailPage() {
   const initialSelectedProduct = searchParams?.get('product') || '';
 
   // Auth Context: Check logged in user and client role
-  const { user, profile, role } = useAuth();
+  const { user, profile, role, loading: authLoading } = useAuth();
+  const [authVerified, setAuthVerified] = useState(false);
+
+  // Guard: Without login don't show shop details and list page
+  useEffect(() => {
+    if (authLoading) return;
+    const token = typeof window !== 'undefined' ? (localStorage.getItem('dukan_auth_token') || localStorage.getItem('dukan_admin_token')) : null;
+    const hasActiveUser = Boolean(token && (user || profile || localStorage.getItem('dukan_auth_user')));
+    if (!hasActiveUser) {
+      const currentPath = `/store/${storeIdParam}`;
+      router.replace(`/login?redirect=${encodeURIComponent(currentPath)}`);
+    } else {
+      setAuthVerified(true);
+    }
+  }, [authLoading, user, profile, storeIdParam, router]);
 
   // Loading & Error States
   const [loading, setLoading] = useState(true);
@@ -203,6 +219,17 @@ export default function StoreDetailPage() {
   const [prodFormImage, setProdFormImage] = useState('/grocery-product.jpg');
   const [prodFormSpecs, setProdFormSpecs] = useState('');
   const [uploadingProductImg, setUploadingProductImg] = useState(false);
+
+  // -------------------------------------------------------------
+  // REVIEW / RATING STATE
+  // -------------------------------------------------------------
+  const [reviews, setReviews] = useState<any[]>([]);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
+  const [myRating, setMyRating] = useState<number>(0);
+  const [hoverRating, setHoverRating] = useState<number>(0);
+  const [reviewComment, setReviewComment] = useState('');
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [reviewSubmitted, setReviewSubmitted] = useState(false);
 
   // -------------------------------------------------------------
   // LOAD DYNAMIC STORE & PRODUCTS FROM SUPABASE TABLE
@@ -335,6 +362,51 @@ export default function StoreDetailPage() {
     loadStoreFromSupabase();
   }, [storeIdParam]);
 
+  // Load reviews whenever store is known
+  const loadReviews = async (storeId: string) => {
+    if (!storeId || storeId === 'my-store') return;
+    setReviewsLoading(true);
+    try {
+      const res = await fetch(`/api/reviews?store_id=${encodeURIComponent(storeId)}`, {
+        cache: 'no-store'
+      });
+      const json = await res.json();
+      if (json.success) {
+        const fetchedReviews = json.reviews || [];
+        setReviews(fetchedReviews);
+        if (fetchedReviews.length > 0) {
+          const avg = parseFloat(
+            (fetchedReviews.reduce((sum: number, r: any) => sum + Number(r.rating), 0) / fetchedReviews.length).toFixed(1)
+          );
+          setCurrentStore((prev) => ({
+            ...prev,
+            rating: avg,
+            reviewsCount: fetchedReviews.length
+          }));
+        }
+        // Pre-fill my rating if I already reviewed
+        if (user?.id) {
+          const myReview = fetchedReviews.find((r: any) => r.user_id === user.id);
+          if (myReview) {
+            setMyRating(myReview.rating);
+            setReviewComment(myReview.comment || '');
+            setReviewSubmitted(true);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('loadReviews error:', err);
+    } finally {
+      setReviewsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentStore.id && currentStore.id !== '') {
+      loadReviews(currentStore.id);
+    }
+  }, [currentStore.id]);
+
   // Real-time Socket.IO Message Listener & Audio Notifications for Shopper
   useEffect(() => {
     let activeSocket: any = null;
@@ -342,21 +414,31 @@ export default function StoreDetailPage() {
       try {
         activeSocket = await getSocket();
         activeSocket.on('receive_message', (msg: any) => {
+          // If this message was sent by the current user, ignore (already rendered)
+          if (user?.id && msg.sender_id === user.id) return;
+
           playNotificationChime();
           const isQuote = msg.message_type === 'price_quote';
           const textContent = isQuote
             ? `🏷️ Counter Price Quote: ₹${msg.metadata?.quoted_price || msg.content}`
             : msg.content;
 
-          setChatMessages((prev) => [
-            ...prev,
-            {
-              sender: 'store',
-              text: textContent,
-              time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              isQuote
-            }
-          ]);
+          setChatMessages((prev) => {
+            if (msg.id && prev.some((m: any) => m.id === msg.id)) return prev;
+            if (prev.some((m: any) => m.text === textContent && m.sender === 'store')) return prev;
+            return [
+              ...prev,
+              {
+                id: msg.id,
+                sender: 'store',
+                text: textContent,
+                time: msg.created_at
+                  ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                isQuote
+              }
+            ];
+          });
 
           showToast(`💬 New response from ${currentStore.name}: ${textContent}`);
         });
@@ -371,7 +453,7 @@ export default function StoreDetailPage() {
         activeSocket.off('receive_message');
       }
     };
-  }, [currentStore.name]);
+  }, [currentStore.name, user?.id]);
 
   // -------------------------------------------------------------
   // 1-TAP LIVE OPEN / CLOSED TOGGLE (SYNC WITH SUPABASE TABLE)
@@ -487,8 +569,10 @@ export default function StoreDetailPage() {
       if (targetStoreId) {
         syncStoreToSupabase({
           id: targetStoreId,
+          owner_id: user?.id,
           banner_url: res.url,
         }).catch((e) => console.warn('Banner auto-sync note:', e));
+        supabase.from('stores').update({ banner_url: res.url }).eq('id', targetStoreId).then();
       }
     } else {
       alert(`Upload note: ${res.error || 'Failed to upload image'}`);
@@ -784,7 +868,7 @@ export default function StoreDetailPage() {
       }
 
       if (convId) {
-        await sendDirectMessage({
+        const savedMsg = await sendDirectMessage({
           conversation_id: convId,
           sender_id: user.id,
           content: userMsg,
@@ -795,13 +879,66 @@ export default function StoreDetailPage() {
           conversationId: convId,
           content: userMsg,
           messageType: 'text',
-          senderId: user.id
+          senderId: user.id,
+          messageId: savedMsg?.id
         });
       }
     } catch (err) {
       console.error('Error sending customer chat message:', err);
     }
   };
+
+  // Handle review submission
+  const handleSubmitReview = async () => {
+    if (!user) {
+      router.push(`/login?redirect=/store/${storeIdParam}`);
+      return;
+    }
+    if (!myRating || myRating < 1) {
+      showToast('Please select a star rating first!');
+      return;
+    }
+    setReviewSubmitting(true);
+    try {
+      const res = await fetch('/api/reviews', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          store_id: currentStore.id,
+          user_id: user.id,
+          user_name: profile?.full_name || user?.user_metadata?.full_name || 'Customer',
+          rating: myRating,
+          comment: reviewComment.trim()
+        })
+      });
+      const json = await res.json();
+      if (json.success) {
+        setReviewSubmitted(true);
+        showToast(`⭐ Thank you! Your ${myRating}-star review was saved.`);
+        // Refresh reviews and update displayed rating
+        await loadReviews(currentStore.id);
+        // Recalc the displayed rating
+        const allR = [...reviews.filter((r: any) => r.user_id !== user.id), json.review];
+        const avg = parseFloat((allR.reduce((s: number, r: any) => s + Number(r.rating), 0) / allR.length).toFixed(1));
+        setCurrentStore((prev) => ({ ...prev, rating: avg, reviewsCount: allR.length }));
+      } else {
+        showToast(json.error || 'Failed to submit review');
+      }
+    } catch (err) {
+      console.error('Review submit error:', err);
+    } finally {
+      setReviewSubmitting(false);
+    }
+  };
+
+  if (authLoading || !authVerified) {
+    return (
+      <div className="min-h-screen bg-[#0b0f19] flex flex-col items-center justify-center text-slate-300 gap-3">
+        <div className="w-8 h-8 border-2 border-[#2874f0] border-t-transparent rounded-full animate-spin" />
+        <p className="text-xs font-bold text-slate-400">Verifying session...</p>
+      </div>
+    );
+  }
 
   if (loading) {
     return (
@@ -842,93 +979,6 @@ export default function StoreDetailPage() {
             </span>
           </div>
 
-          <div className="flex items-center gap-2 sm:gap-3">
-            {isStoreOwner ? (
-              <>
-                {/* 1-Tap Quick Live Status Switch (Syncs to Supabase) */}
-                <button
-                  onClick={handleToggleLiveStatus}
-                  className={`text-xs font-black px-2.5 py-1.5 rounded-sm flex items-center gap-1.5 transition-colors shadow-xs ${currentStore.isLiveOpen
-                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                    : 'bg-rose-600 hover:bg-rose-700 text-white'
-                    }`}
-                  title="Toggle Store Live Open / Closed"
-                >
-                  <Power className="w-3.5 h-3.5" />
-                  <span>{currentStore.isLiveOpen ? 'LIVE OPEN' : 'CLOSED'}</span>
-                </button>
-
-                {/* Edit Store Details Modal Button */}
-                <button
-                  onClick={handleOpenStoreEdit}
-                  className="bg-white/15 hover:bg-white/25 text-white font-bold text-xs px-2.5 py-1.5 rounded-sm border border-white/20 flex items-center gap-1.5 transition-colors"
-                  title="Edit Store Profile"
-                >
-                  <Edit2 className="w-3.5 h-3.5 text-[#ffe500]" />
-                  <span className="hidden sm:inline">Edit Store</span>
-                </button>
-
-                {/* Add Product / Service Modal Button */}
-                <button
-                  onClick={handleOpenAddProduct}
-                  className="bg-[#ffe500] hover:bg-amber-400 text-[#1e3a8a] font-black text-xs px-3 py-1.5 rounded-sm shadow-xs flex items-center gap-1.5 transition-colors"
-                  title="Add Item or Service to Catalog"
-                >
-                  <Plus className="w-3.5 h-3.5 stroke-[3]" />
-                  <span>+ Add Item</span>
-                </button>
-
-                <Link
-                  href="/merchant"
-                  className="bg-white/15 hover:bg-white/25 text-white font-bold text-xs px-2.5 py-1.5 rounded-sm border border-white/20 hidden md:flex items-center gap-1.5 transition-colors"
-                  title="Merchant Studio"
-                >
-                  <Store className="w-3.5 h-3.5 text-[#ffe500]" />
-                  <span>Merchant Studio</span>
-                </Link>
-              </>
-            ) : (
-              <>
-                {/* Normal User / Customer View: Store Status Pill + Live Chat + Call Shop */}
-                <span
-                  className={`text-xs font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5 shadow-xs ${currentStore.isLiveOpen
-                    ? 'bg-emerald-500/20 text-emerald-100 border border-emerald-400/30'
-                    : 'bg-rose-500/20 text-rose-100 border border-rose-400/30'
-                    }`}
-                >
-                  <span
-                    className={`w-2 h-2 rounded-full ${currentStore.isLiveOpen ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'
-                      }`}
-                  />
-                  <span>{currentStore.isLiveOpen ? 'Store Open' : 'Store Closed'}</span>
-                </span>
-
-                <button
-                  onClick={() => handleOpenLiveChat()}
-                  className="bg-[#ffe500] hover:bg-amber-400 text-[#1e3a8a] font-black text-xs px-3 py-1.5 rounded-sm shadow-xs flex items-center gap-1.5 transition-colors"
-                  title="Direct Live Chat with Store"
-                >
-                  <MessageSquare className="w-3.5 h-3.5" />
-                  <span>Chat</span>
-                </button>
-
-                {currentStore.phone && (
-                  <a
-                    href={`tel:${currentStore.phone}`}
-                    className="bg-white/15 hover:bg-white/25 text-white font-bold text-xs px-2.5 py-1.5 rounded-sm border border-white/20 flex items-center gap-1.5 transition-colors"
-                    title="Call Store"
-                  >
-                    <Phone className="w-3.5 h-3.5 text-emerald-300" />
-                    <span className="hidden sm:inline">Call</span>
-                  </a>
-                )}
-              </>
-            )}
-
-            <Link href="/" className="text-xs font-bold text-white hover:text-blue-100 hidden sm:inline">
-              Home
-            </Link>
-          </div>
         </div>
       </header>
 
@@ -1004,10 +1054,17 @@ export default function StoreDetailPage() {
                   <h1 className="text-2xl sm:text-3xl font-black text-white drop-shadow-md">
                     {currentStore.name}
                   </h1>
-                  <span className="bg-emerald-600 text-white text-xs font-black px-2 py-0.5 rounded flex items-center gap-1 shadow">
-                    <span>{currentStore.rating}</span>
-                    <Star className="w-3 h-3 fill-current" />
-                  </span>
+                  <div className="flex items-center gap-0.5 bg-emerald-600 text-white text-xs font-black px-2 py-0.5 rounded shadow">
+                    {[1, 2, 3, 4, 5].map((s) => (
+                      <svg key={s} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className={`w-3 h-3 ${s <= Math.round(currentStore.rating) ? 'fill-[#ffe500] text-[#ffe500]' : 'fill-white/30 text-white/30'}`} fill="currentColor">
+                        <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
+                      </svg>
+                    ))}
+                    <span className="ml-1">{currentStore.rating}</span>
+                    {currentStore.reviewsCount > 0 && (
+                      <span className="text-white/70 font-normal ml-0.5">({currentStore.reviewsCount})</span>
+                    )}
+                  </div>
                   {isStoreOwner && (
                     <button
                       onClick={handleOpenStoreEdit}
@@ -1091,30 +1148,6 @@ export default function StoreDetailPage() {
               </span>
             </div>
           )}
-
-          {/* Vocal for Local Trust Strip */}
-          <div className="bg-gradient-to-r from-orange-50 via-white to-emerald-50 border-t border-orange-200/80 px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded bg-orange-600 text-white font-black text-[10px] tracking-wide uppercase shadow-xs">
-                🇮🇳 Vocal for Local
-              </span>
-              <span className="font-extrabold text-slate-800">
-                “Local Khareedo, Desh Badhao” — Direct Verified Neighborhood Dukandar!
-              </span>
-            </div>
-            <div className="flex items-center gap-4 text-[11px] text-slate-600 font-bold">
-              <span className="flex items-center gap-1 text-emerald-700">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                <span>0% Commission</span>
-              </span>
-              <span className="flex items-center gap-1 text-blue-700">
-                <span>📲 Instant Counter Sync</span>
-              </span>
-              <span className="flex items-center gap-1 text-orange-700">
-                <span>⚡ Real-Time Counter Pickup</span>
-              </span>
-            </div>
-          </div>
         </div>
 
         {/* 3. SPOTLIGHT ITEM (If products exist) */}
@@ -1476,18 +1509,142 @@ export default function StoreDetailPage() {
           <p className="text-xs text-slate-600 leading-relaxed max-w-4xl">
             {currentStore.aboutText}
           </p>
-          <div className="pt-3 border-t border-slate-100 flex flex-wrap gap-4 text-xs text-slate-600">
-            <span className="flex items-center gap-1 text-emerald-700 font-bold">
-              <CheckCircle className="w-4 h-4" /> Supabase Synchronized Storefront
-            </span>
-            <span className="flex items-center gap-1 text-blue-700 font-bold">
-              <CheckCircle className="w-4 h-4" /> 0% Platform Commission Counter
-            </span>
-            <span className="flex items-center gap-1 text-slate-700 font-bold">
-              <CheckCircle className="w-4 h-4" /> Direct WhatsApp & Instant Phone Connect
-            </span>
-          </div>
+
         </div>
+
+        {/* 6. CUSTOMER REVIEWS & RATINGS */}
+        {currentStore.id && currentStore.id !== 'my-store' && (
+          <div className="bg-white rounded-xl shadow-xs hidden border border-slate-200 p-6 space-y-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-black text-slate-900">Customer Reviews</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {reviews.length} review{reviews.length !== 1 ? 's' : ''} · Avg ⭐ {currentStore.rating}
+                </p>
+              </div>
+              {/* Average rating display */}
+              <div className="flex flex-col items-center">
+                <span className="text-3xl font-black text-slate-900">{currentStore.rating}</span>
+                <div className="flex gap-0.5 mt-0.5">
+                  {[1, 2, 3, 4, 5].map((s) => (
+                    <svg key={s} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className={`w-4 h-4 ${s <= Math.round(currentStore.rating) ? 'fill-[#fb8c00] text-[#fb8c00]' : 'fill-slate-200 text-slate-200'}`} fill="currentColor">
+                      <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
+                    </svg>
+                  ))}
+                </div>
+                <span className="text-[10px] text-slate-500 mt-0.5">{currentStore.reviewsCount} ratings</span>
+              </div>
+            </div>
+
+            {/* Leave a review (non-owners only) */}
+            {!isStoreOwner && (
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                <p className="text-xs font-black text-slate-800">
+                  {reviewSubmitted ? '✅ Your Review' : '⭐ Rate this Store'}
+                </p>
+                {/* Star selector */}
+                <div className="flex items-center gap-1.5">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onMouseEnter={() => !reviewSubmitted && setHoverRating(star)}
+                      onMouseLeave={() => !reviewSubmitted && setHoverRating(0)}
+                      onClick={() => !reviewSubmitted && setMyRating(star)}
+                      className={`transition-transform ${!reviewSubmitted ? 'hover:scale-125 cursor-pointer' : 'cursor-default'}`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className={`w-7 h-7 transition-colors ${star <= (hoverRating || myRating) ? 'fill-[#fb8c00] text-[#fb8c00]' : 'fill-slate-200 text-slate-200'
+                        }`} fill="currentColor">
+                        <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
+                      </svg>
+                    </button>
+                  ))}
+                  {myRating > 0 && (
+                    <span className="text-xs font-black text-slate-700 ml-1">
+                      {['', 'Poor', 'Fair', 'Good', 'Very Good', 'Excellent'][myRating]}
+                    </span>
+                  )}
+                </div>
+
+                {/* Comment */}
+                <textarea
+                  rows={2}
+                  placeholder="Optional: Share your experience (e.g. great service, fresh items...)"
+                  value={reviewComment}
+                  onChange={(e) => setReviewComment(e.target.value)}
+                  disabled={reviewSubmitted}
+                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-none focus:border-[#2874f0] resize-none disabled:bg-slate-50 disabled:text-slate-500"
+                />
+
+                {!reviewSubmitted ? (
+                  <button
+                    onClick={handleSubmitReview}
+                    disabled={reviewSubmitting || myRating === 0}
+                    className="bg-[#2874f0] hover:bg-[#1759c9] disabled:opacity-50 text-white text-xs font-black px-4 py-1.5 rounded-lg shadow-xs flex items-center gap-1.5 transition-colors"
+                  >
+                    {reviewSubmitting ? (
+                      <><svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="30" /></svg> Submitting...</>
+                    ) : (
+                      <>⭐ Submit Review</>
+                    )}
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">✓ Review Submitted</span>
+                    <button
+                      onClick={() => { setReviewSubmitted(false); }}
+                      className="text-xs text-[#2874f0] font-bold hover:underline"
+                    >Edit</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Reviews list */}
+            {reviewsLoading ? (
+              <div className="flex items-center gap-2 text-slate-400 text-xs">
+                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="30" /></svg>
+                Loading reviews...
+              </div>
+            ) : reviews.length === 0 ? (
+              <div className="text-center py-8 text-slate-400">
+                <p className="text-xs font-bold">No reviews yet. Be the first to rate this store!</p>
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+                {reviews.map((r: any) => (
+                  <div key={r.id || r.user_id} className="border border-slate-100 rounded-lg p-3 bg-slate-50/60">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full bg-[#2874f0] text-white flex items-center justify-center text-[10px] font-black">
+                          {(r.user_name || 'U').charAt(0).toUpperCase()}
+                        </div>
+                        <span className="text-xs font-black text-slate-800">{r.user_name || 'Customer'}</span>
+                        {r.user_id === user?.id && (
+                          <span className="text-[10px] bg-blue-50 text-[#2874f0] font-bold px-1.5 py-0.5 rounded">You</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-0.5">
+                        {[1, 2, 3, 4, 5].map((s) => (
+                          <svg key={s} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className={`w-3 h-3 ${s <= r.rating ? 'fill-[#fb8c00] text-[#fb8c00]' : 'fill-slate-200 text-slate-200'}`} fill="currentColor">
+                            <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" />
+                          </svg>
+                        ))}
+                        <span className="text-[10px] font-bold text-slate-600 ml-0.5">{r.rating}/5</span>
+                      </div>
+                    </div>
+                    {r.comment && (
+                      <p className="text-xs text-slate-600 leading-relaxed ml-9">{r.comment}</p>
+                    )}
+                    <p className="text-[10px] text-slate-400 mt-1 ml-9">
+                      {r.updated_at ? new Date(r.updated_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : ''}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </main>
 
       {/* -------------------------------------------------------------

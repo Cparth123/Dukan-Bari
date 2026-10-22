@@ -34,9 +34,19 @@ export async function POST(request: Request) {
     }
 
     let storeId = body.store_id;
-    if (!storeId || storeId === 'my-store' || storeId === 'store-1') {
-      const { data: firstStore } = await supabaseAdmin.from('stores').select('id').limit(1).maybeSingle();
+    let validStore = false;
+    if (storeId && storeId.length > 20 && storeId !== 'my-store' && storeId !== 'store-1') {
+      const { data: checkStore } = await supabaseAdmin.from('stores').select('id').eq('id', storeId).maybeSingle();
+      if (checkStore?.id) validStore = true;
+    }
+
+    if (!validStore) {
+      const { data: firstStore } = await supabaseAdmin.from('stores').select('id').order('created_at', { ascending: false }).limit(1).maybeSingle();
       storeId = firstStore?.id;
+    }
+
+    if (!storeId) {
+      return NextResponse.json({ success: false, error: 'Valid store_id is required' }, { status: 400 });
     }
 
     const validUntilDate = body.valid_until ? new Date(body.valid_until).toISOString() : new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
@@ -44,7 +54,7 @@ export async function POST(request: Request) {
     const payload = {
       store_id: storeId,
       title: body.title.trim(),
-      description: body.description || '',
+      description: body.description || body.title.trim() || 'Neighborhood Special Offer',
       discount_tag: body.discount_tag || body.discountTag || 'SPECIAL OFFER',
       banner_image: body.banner_image || body.bannerImage || '/barber-service.jpg',
       valid_until: validUntilDate,

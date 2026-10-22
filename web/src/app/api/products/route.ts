@@ -34,9 +34,31 @@ export async function POST(request: Request) {
     }
 
     let storeId = body.store_id;
-    if (!storeId || storeId === 'my-store' || storeId === 'store-1') {
-      const { data: firstStore } = await supabaseAdmin.from('stores').select('id').limit(1).maybeSingle();
-      storeId = firstStore?.id;
+    let validStore = false;
+    if (storeId && storeId.length > 20 && storeId !== 'my-store' && storeId !== 'store-1') {
+      const { data: checkStore } = await supabaseAdmin.from('stores').select('id').eq('id', storeId).maybeSingle();
+      if (checkStore?.id) validStore = true;
+    }
+
+    if (!validStore) {
+      const { data: firstStore } = await supabaseAdmin.from('stores').select('id').order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (firstStore?.id) {
+        storeId = firstStore.id;
+      } else {
+        const { data: firstUser } = await supabaseAdmin.from('users').select('id').limit(1).maybeSingle();
+        const ownerId = firstUser?.id;
+        if (ownerId) {
+          const { data: createdStore } = await supabaseAdmin.from('stores').insert({
+            owner_id: ownerId,
+            store_name: 'My Store',
+            category: 'Grocery & Kirana',
+            address_line: 'Surat Main Road',
+            city: 'Surat',
+            pincode: '395004'
+          }).select('id').single();
+          storeId = createdStore?.id;
+        }
+      }
     }
 
     if (!storeId) {

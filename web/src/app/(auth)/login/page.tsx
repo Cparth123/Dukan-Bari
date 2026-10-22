@@ -71,9 +71,17 @@ function LoginForm() {
     }
   };
 
-  const handleQuickDemo = (role: UserRole) => {
-    setMockRole(role);
+  const handleQuickDemo = async (role: UserRole, subtype?: string) => {
+    await setMockRole(role, subtype);
     if (redirectUrl) {
+      if (role === 'customer' && redirectUrl.includes('merchant')) {
+        router.push('/explore');
+        return;
+      }
+      if (role === 'shop_owner' && redirectUrl.includes('admin')) {
+        router.push('/merchant');
+        return;
+      }
       router.push(redirectUrl);
       return;
     }
@@ -125,7 +133,7 @@ function LoginForm() {
       {/* 2. Main Two-Column Flipkart Split Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-10 flex items-center">
         <div className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden grid grid-cols-1 lg:grid-cols-12 w-full min-h-[580px]">
-          
+
           {/* LEFT COLUMN: Flipkart Seller Hub Hero Banner */}
           <div className="lg:col-span-5 bg-gradient-to-br from-[#1a5bc7] via-[#2874f0] to-[#0d47a1] text-white p-6 sm:p-10 flex flex-col justify-between relative overflow-hidden">
             <div className="absolute top-0 right-0 -mr-16 -mt-16 w-64 h-64 bg-white/10 rounded-full blur-2xl pointer-events-none" />
@@ -198,7 +206,7 @@ function LoginForm() {
 
           {/* RIGHT COLUMN: Flipkart Style Login Card */}
           <div className="lg:col-span-7 p-6 sm:p-10 flex flex-col justify-center bg-white">
-            
+
             <div className="border-b border-slate-100 pb-4 mb-5">
               <div className="flex items-center justify-between">
                 <div>
@@ -290,17 +298,17 @@ function LoginForm() {
             </form>
 
             {/* OR DIVIDER */}
-            <div className="relative my-4">
+            {/* <div className="relative my-4">
               <div className="absolute inset-0 flex items-center">
                 <div className="w-full border-t border-slate-200" />
               </div>
               <div className="relative flex justify-center text-xs uppercase">
                 <span className="bg-white px-3 text-slate-400 font-semibold">Or continue with</span>
               </div>
-            </div>
+            </div> */}
 
             {/* GOOGLE SIGN IN */}
-            <button
+            {/* <button
               type="button"
               onClick={handleGoogleSignIn}
               disabled={googleLoading}
@@ -318,8 +326,9 @@ function LoginForm() {
               )}
               <span>Continue with Google</span>
             </button>
+ */}
 
-            {/* Quick Demo Switcher */}
+            {/* 1-Tap Quick Role Tester */}
             <div className="mt-6 pt-4 border-t border-slate-100">
               <span className="block text-center text-[10px] font-black text-slate-400 tracking-wider uppercase mb-2">
                 ⚡ 1-Tap Quick Role Tester
@@ -336,7 +345,7 @@ function LoginForm() {
 
                 <button
                   type="button"
-                  onClick={() => handleQuickDemo('shop_owner')}
+                  onClick={() => handleQuickDemo('shop_owner', 'products')}
                   className="p-2 rounded-lg bg-orange-50 hover:bg-orange-100 text-[#fb641b] border border-orange-200 text-center transition-colors"
                 >
                   <span className="block text-[11px] font-black">📦 Products</span>
@@ -345,7 +354,7 @@ function LoginForm() {
 
                 <button
                   type="button"
-                  onClick={() => handleQuickDemo('shop_owner')}
+                  onClick={() => handleQuickDemo('shop_owner', 'services')}
                   className="p-2 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-center transition-colors"
                 >
                   <span className="block text-[11px] font-black">💼 Services</span>

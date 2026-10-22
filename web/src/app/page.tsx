@@ -45,12 +45,21 @@ import { useAuth } from '@/context/AuthContext';
 
 export default function HomePage() {
   const router = useRouter();
-  const { setMockRole } = useAuth();
+  const { user, profile, role, signOut, setMockRole } = useAuth();
   const [phoneNumber, setPhoneNumber] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentSlide, setCurrentSlide] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
+  const [hasStoreSession, setHasStoreSession] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const token = localStorage.getItem('dukan_auth_token');
+      const isStoreRole = role === 'shop_owner' || profile?.role === 'shop_owner' || Boolean(profile?.store_id);
+      setHasStoreSession(Boolean(token && (user || profile) && isStoreRole));
+    }
+  }, [user, profile, role]);
 
   // Category Slides for Animated Hero Banner
   const heroSlides = [
@@ -198,8 +207,8 @@ export default function HomePage() {
       a: 'Yes, absolutely! Dukan Bari is built for both retail physical stores and verified local service providers. Advocates can list their legal chambers, CAs and tax practitioners can accept ITR/GST consultations, tailors can offer garment alteration quotes, and electricians/plumbers can receive local booking enquiries.'
     },
     {
-      q: 'What is the "Reverse Enquiry (Poochhein)" feature?',
-      a: 'When a neighborhood shopper searches for a specific medicine, grocery item, or service, their enquiry is broadcast in real time to all matching verified counters within 1 to 5 km. As a merchant, you can reply in one tap with your counter price and availability to win the customer immediately.'
+      q: 'How do Customer Reviews & Star Ratings work on Dukan Bari?',
+      a: 'Verified neighborhood customers can rate physical counters from 1 to 5 stars and leave helpful feedback. Ratings update the store’s public score in real-time, helping trusted local merchants build digital goodwill and attract more shoppers.'
     },
     {
       q: 'How does the "1-Tap Live Status" switch work?',
@@ -293,20 +302,37 @@ export default function HomePage() {
               <span>Explore Nearby (1-5km)</span>
             </Link>
 
-            <Link
-              href="/merchant"
-              className="bg-[#ffe500] text-[#2874f0] hover:bg-[#f5b500] font-extrabold text-xs px-3.5 py-2 rounded-sm shadow-sm transition-all flex items-center gap-1.5"
-            >
-              <Store className="w-3.5 h-3.5" />
-              <span>Manage Store</span>
-            </Link>
+            {/* Manage Store button: strictly rendered ONLY if store account is logged in and session token exists */}
+            {hasStoreSession && (
+              <Link
+                href="/merchant"
+                className="bg-[#ffe500] text-[#2874f0] hover:bg-[#f5b500] font-extrabold text-xs px-3.5 py-2 rounded-sm shadow-sm transition-all flex items-center gap-1.5 animate-fadeIn"
+              >
+                <Store className="w-3.5 h-3.5" />
+                <span>Manage Store</span>
+              </Link>
+            )}
 
-            <Link
-              href="/login"
-              className="bg-white text-[#2874f0] hover:bg-slate-100 font-extrabold text-xs px-4 py-2 rounded-sm shadow-sm transition-all"
-            >
-              Login
-            </Link>
+            {user || profile ? (
+              <div className="flex items-center gap-2">
+                <span className="hidden sm:inline-block text-xs font-bold text-white bg-blue-700/60 px-2.5 py-1 rounded-sm border border-blue-400/30 truncate max-w-[120px]">
+                  {profile?.full_name?.split(' ')[0] || user?.email?.split('@')[0] || 'My Account'}
+                </span>
+                <button
+                  onClick={() => signOut()}
+                  className="bg-white/20 hover:bg-white/30 text-white font-extrabold text-xs px-3 py-2 rounded-sm transition-all"
+                >
+                  Logout
+                </button>
+              </div>
+            ) : (
+              <Link
+                href="/login"
+                className="bg-white text-[#2874f0] hover:bg-slate-100 font-extrabold text-xs px-4 py-2 rounded-sm shadow-sm transition-all"
+              >
+                Login
+              </Link>
+            )}
           </div>
         </div>
 
@@ -327,7 +353,7 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* 2. Top Categories Strip (Flipkart-style circular items) */}
+      {/* 2. Top Categories Strip (Flipkart-style circular items)
       <section className="bg-white border-b border-slate-200 py-3 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 flex items-center justify-between gap-4 overflow-x-auto scrollbar-none">
           {[
@@ -358,7 +384,7 @@ export default function HomePage() {
             </Link>
           ))}
         </div>
-      </section>
+      </section> */}
 
       {/* 3. HERO BANNER: Multi-Category Slider & Quick Onboarding */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 pt-5 pb-12 space-y-10">
@@ -620,19 +646,19 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* 4.2. HOW REVERSE ENQUIRY (POOCHHEIN) WORKS */}
+        {/* 4.2. HOW CUSTOMER REVIEWS & LOCAL RATINGS WORK */}
         <section className="bg-gradient-to-br from-slate-900 via-slate-900 to-blue-950 text-white rounded-2xl shadow-xl p-6 sm:p-10 space-y-8 relative overflow-hidden">
           <div className="absolute top-0 right-0 -mr-20 -mt-20 w-80 h-80 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
 
           <div className="max-w-3xl space-y-2 relative z-10">
             <span className="text-xs font-black uppercase tracking-widest text-[#ffe500] bg-white/10 px-3 py-1 rounded-full border border-white/15">
-              ⚡ Exclusive Reverse Lead Radar
+              ⭐ Real Customer Reviews & Ratings
             </span>
             <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-              Kaise Kaam Karta Hai “Poochhein” Reverse Enquiry Radar?
+              Trusted Neighborhood Ratings & Real-Time Feedback
             </h2>
             <p className="text-xs sm:text-sm text-slate-300">
-              When shoppers need an urgent item or quote, they broadcast once — nearby verified merchants reply in seconds with live stock availability and pricing.
+              Shoppers rate local shops from 1 to 5 stars. Real ratings update the store’s profile live, building genuine trust across your neighborhood.
             </p>
           </div>
 
@@ -641,12 +667,12 @@ export default function HomePage() {
               <div className="w-10 h-10 rounded-lg bg-[#ffe500] text-slate-900 flex items-center justify-center font-black text-sm">
                 1
               </div>
-              <h4 className="font-extrabold text-sm text-white">Customer Broadcasts Requirement</h4>
+              <h4 className="font-extrabold text-sm text-white">Shoppers Give Star Ratings</h4>
               <p className="text-xs text-slate-300 leading-relaxed">
-                Shopper types "Need 5L Cow Milk & 500g Paneer" or "Urgent Property Deed Verification" with their location radius (1-5km).
+                Customers choose 1 to 5 stars and share brief comments about counter service, freshness, and delivery speed.
               </p>
               <div className="p-2.5 bg-black/40 rounded-lg text-[11px] text-[#ffe500] border border-white/10 font-mono">
-                📡 Broadcasting to verified local counters...
+                ⭐ 5-Star: "Fresh vegetables and polite uncle!"
               </div>
             </div>
 
@@ -654,12 +680,12 @@ export default function HomePage() {
               <div className="w-10 h-10 rounded-lg bg-emerald-400 text-slate-900 flex items-center justify-center font-black text-sm">
                 2
               </div>
-              <h4 className="font-extrabold text-sm text-white">Shops Reply with Instant Counter Quote</h4>
+              <h4 className="font-extrabold text-sm text-white">Live Average Recalculated</h4>
               <p className="text-xs text-slate-300 leading-relaxed">
-                Merchant desks receive real-time audio chimes and reply with accurate quotes in 1 tap before other shops take the order.
+                Supabase recalculates the store’s average rating and total review count in real-time, syncing across all discovery cards.
               </p>
               <div className="p-2.5 bg-black/40 rounded-lg text-[11px] text-emerald-300 border border-white/10 font-mono">
-                🏷️ Counter Reply: "Available! ₹320 Total, ready in 5m"
+                📈 Store Score Updated: 4.9 ★ (128 Reviews)
               </div>
             </div>
 
@@ -667,12 +693,12 @@ export default function HomePage() {
               <div className="w-10 h-10 rounded-lg bg-[#2874f0] text-white flex items-center justify-center font-black text-sm">
                 3
               </div>
-              <h4 className="font-extrabold text-sm text-white">Customer Walks Over or Direct Delivery</h4>
+              <h4 className="font-extrabold text-sm text-white">Nearby Customers Trust & Buy</h4>
               <p className="text-xs text-slate-300 leading-relaxed">
-                Shopper confirms via 1-to-1 live chat, pays direct UPI with 0% platform surcharge, and walks over with Google Maps.
+                High ratings attract neighbors on the Explore page, turning happy local customers into repeat daily walk-in shoppers.
               </p>
               <div className="p-2.5 bg-black/40 rounded-lg text-[11px] text-blue-200 border border-white/10 font-mono">
-                ✓ Order Confirmed · Direct UPI ₹320 Paid
+                ✓ Verified Counter Badge Displayed Live
               </div>
             </div>
           </div>
@@ -682,11 +708,11 @@ export default function HomePage() {
               href="/explore"
               className="px-6 py-3 rounded-lg bg-[#ffe500] hover:bg-[#ebd300] text-slate-950 font-black text-xs shadow-lg transition-all flex items-center gap-2"
             >
-              <span>Try Broadcasting an Enquiry on Explore Page</span>
+              <span>Explore Verified Local Stores</span>
               <ArrowRight className="w-4 h-4" />
             </Link>
             <span className="text-xs text-slate-400 font-semibold">
-              ✦ Used by over 10,000+ local families daily
+              ✦ Verified reviews from authentic neighborhood shoppers
             </span>
           </div>
         </section>
@@ -953,37 +979,16 @@ export default function HomePage() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
             <div>
               <span className="text-xs font-black uppercase tracking-widest text-[#ffe500]">
-                ⚡ Direct Access
+                ⚡ Direct Portals
               </span>
               <h2 className="text-2xl font-black text-white mt-1">
-                Explore All 3 Roles
+                Explore Platform Portals
               </h2>
             </div>
-            <span className="text-xs text-slate-400">Launch any dedicated studio view</span>
+            <span className="text-xs text-slate-400">Launch verified dukandar or shopper view</span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Superadmin Card */}
-            <div className="p-6 rounded-xl bg-slate-800/80 border border-purple-500/30 flex flex-col justify-between">
-              <div>
-                <div className="w-10 h-10 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold mb-4">
-                  <ShieldCheck className="w-6 h-6" />
-                </div>
-                <h3 className="text-lg font-bold text-white mb-1">Superadmin Portal</h3>
-                <p className="text-xs text-slate-400 mb-4">
-                  Merchant verification queue, platform health, city geofence zones, and global announcements.
-                </p>
-              </div>
-              <Link
-                href="/admin"
-                onClick={() => setMockRole('superadmin')}
-                className="w-full py-2.5 rounded-sm bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-colors"
-              >
-                <span>Launch Superadmin</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Link>
-            </div>
-
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
             {/* Dukandar Card */}
             <div className="p-6 rounded-xl bg-slate-800/80 border border-[#fb641b]/30 flex flex-col justify-between">
               <div>
@@ -992,7 +997,7 @@ export default function HomePage() {
                 </div>
                 <h3 className="text-lg font-bold text-white mb-1">Dukandar Studio</h3>
                 <p className="text-xs text-slate-400 mb-4">
-                  1-Tap live toggle for open/closed, reverse enquiry desk, and flash sales with geofenced push alerts.
+                  1-Tap live toggle for open/closed, catalog management, and flash sales with geofenced updates.
                 </p>
               </div>
               <Link
@@ -1013,7 +1018,7 @@ export default function HomePage() {
                 </div>
                 <h3 className="text-lg font-bold text-white mb-1">Customer Explorer</h3>
                 <p className="text-xs text-slate-400 mb-4">
-                  Hyperlocal store discovery (1-5km radius), live open/closed badges, reverse item enquiry broadcast, and 1-to-1 live chats.
+                  Hyperlocal store discovery (1-5km radius), live open/closed badges, verified ratings & reviews, and 1-to-1 live chats.
                 </p>
               </div>
               <Link
@@ -1063,7 +1068,6 @@ export default function HomePage() {
                 <li><Link href="/signup" className="hover:text-white">Register Store (0% Fee)</Link></li>
                 <li><Link href="/merchant" className="hover:text-white">Merchant Studio Desk</Link></li>
                 <li><Link href="/login" className="hover:text-white">Seller Login</Link></li>
-                <li><Link href="/admin" className="hover:text-white">Superadmin Dashboard</Link></li>
                 <li><span className="text-emerald-400 font-bold">100% Direct UPI Settlement</span></li>
               </ul>
             </div>

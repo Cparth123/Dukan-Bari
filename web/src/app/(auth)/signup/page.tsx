@@ -113,8 +113,8 @@ function SignupForm() {
     offeringType === 'product_selling'
       ? productCategories
       : offeringType === 'service_providing'
-      ? serviceCategories
-      : bothCategories;
+        ? serviceCategories
+        : bothCategories;
 
   // Sync category when offeringType changes
   const handleOfferingTypeChange = (type: BusinessOfferingType) => {
@@ -134,13 +134,13 @@ function SignupForm() {
     const storeDetails =
       role === 'shop_owner'
         ? {
-            storeName,
-            category: finalCategory,
-            offeringType,
-            address,
-            city,
-            pincode
-          }
+          storeName,
+          category: finalCategory,
+          offeringType,
+          address,
+          city,
+          pincode
+        }
         : undefined;
 
     const { error } = await signUpWithEmail(
@@ -223,7 +223,7 @@ function SignupForm() {
       {/* 2. Main Two-Column Flipkart Split Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-10">
         <div className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden grid grid-cols-1 lg:grid-cols-12 min-h-[640px]">
-          
+
           {/* LEFT COLUMN: Flipkart Seller Hub Hero Banner */}
           <div className="lg:col-span-5 bg-gradient-to-br from-[#1a5bc7] via-[#2874f0] to-[#0d47a1] text-white p-6 sm:p-10 flex flex-col justify-between relative overflow-hidden">
             {/* Background Decorative Circles */}
@@ -281,7 +281,7 @@ function SignupForm() {
             </div>
 
             {/* Vocal for Local & Digital India Feature Card */}
-            <div className="mt-6 relative z-10 p-3.5 rounded-xl bg-gradient-to-r from-amber-500/20 via-white/10 to-emerald-500/20 border border-white/25 backdrop-blur-sm shadow-md">
+            {/* <div className="mt-6 relative z-10 p-3.5 rounded-xl bg-gradient-to-r from-amber-500/20 via-white/10 to-emerald-500/20 border border-white/25 backdrop-blur-sm shadow-md">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm">🇮🇳</span>
@@ -309,7 +309,7 @@ function SignupForm() {
               <p className="text-[10px] text-blue-100 mt-1 leading-relaxed">
                 <strong className="text-[#ffe500]">Meaning:</strong> Buying from your neighborhood kirana, saloon, chai stall, or panipuri lari keeps wealth within your local community, powered by 0% commission & Digital UPI!
               </p>
-            </div>
+            </div> */}
 
             {/* Dukandar Verified Chip */}
             <div className="mt-4 relative z-10 pt-3 border-t border-white/20 flex items-center gap-3">
@@ -330,7 +330,7 @@ function SignupForm() {
 
           {/* RIGHT COLUMN: Flipkart Style Registration Form */}
           <div className="lg:col-span-7 p-6 sm:p-10 flex flex-col justify-center bg-white">
-            
+
             <div className="border-b border-slate-100 pb-4 mb-6">
               <div className="flex items-center justify-between">
                 <div>
@@ -367,33 +367,31 @@ function SignupForm() {
                 <button
                   type="button"
                   onClick={() => setRole('customer')}
-                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs sm:text-sm font-bold transition-all ${
-                    role === 'customer'
-                      ? 'bg-white text-[#2874f0] shadow-sm border border-slate-200'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
+                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs sm:text-sm font-bold transition-all ${role === 'customer'
+                    ? 'bg-white text-[#2874f0] shadow-sm border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                    }`}
                 >
                   <User className="w-4 h-4 text-[#2874f0]" />
-                  <span>Customer / Khareedar</span>
+                  <span>Customer</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setRole('shop_owner')}
-                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs sm:text-sm font-bold transition-all ${
-                    role === 'shop_owner'
-                      ? 'bg-[#2874f0] text-white shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
+                  className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-lg text-xs sm:text-sm font-bold transition-all ${role === 'shop_owner'
+                    ? 'bg-[#2874f0] text-white shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                    }`}
                 >
                   <Store className="w-4 h-4 text-[#ffe500]" />
-                  <span>Dukandar / Vyapari</span>
+                  <span>Shopkeeper</span>
                 </button>
               </div>
             </div>
 
             <form onSubmit={handleSignup} className="space-y-4">
-              
+
               {/* DUKANDAR SPECIAL SECTION: OFFERING TYPE (Products vs Services vs Both) */}
               {role === 'shop_owner' && (
                 <div className="bg-blue-50/70 border border-blue-200/80 rounded-xl p-4 space-y-4">
@@ -416,16 +414,14 @@ function SignupForm() {
                       <button
                         type="button"
                         onClick={() => handleOfferingTypeChange('product_selling')}
-                        className={`p-3 rounded-xl border text-left transition-all relative ${
-                          offeringType === 'product_selling'
-                            ? 'bg-white border-[#2874f0] shadow-md ring-2 ring-[#2874f0]/20'
-                            : 'bg-white/70 border-slate-200 hover:border-blue-300'
-                        }`}
+                        className={`p-3 rounded-xl border text-left transition-all relative ${offeringType === 'product_selling'
+                          ? 'bg-white border-[#2874f0] shadow-md ring-2 ring-[#2874f0]/20'
+                          : 'bg-white/70 border-slate-200 hover:border-blue-300'
+                          }`}
                       >
                         <div className="flex items-center gap-2 mb-1">
-                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs ${
-                            offeringType === 'product_selling' ? 'bg-[#2874f0] text-white' : 'bg-slate-100 text-slate-600'
-                          }`}>
+                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs ${offeringType === 'product_selling' ? 'bg-[#2874f0] text-white' : 'bg-slate-100 text-slate-600'
+                            }`}>
                             <ShoppingBag className="w-4 h-4" />
                           </div>
                           <span className="text-xs font-black text-slate-900">Product Selling</span>
@@ -442,16 +438,14 @@ function SignupForm() {
                       <button
                         type="button"
                         onClick={() => handleOfferingTypeChange('service_providing')}
-                        className={`p-3 rounded-xl border text-left transition-all relative ${
-                          offeringType === 'service_providing'
-                            ? 'bg-white border-[#2874f0] shadow-md ring-2 ring-[#2874f0]/20'
-                            : 'bg-white/70 border-slate-200 hover:border-blue-300'
-                        }`}
+                        className={`p-3 rounded-xl border text-left transition-all relative ${offeringType === 'service_providing'
+                          ? 'bg-white border-[#2874f0] shadow-md ring-2 ring-[#2874f0]/20'
+                          : 'bg-white/70 border-slate-200 hover:border-blue-300'
+                          }`}
                       >
                         <div className="flex items-center gap-2 mb-1">
-                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs ${
-                            offeringType === 'service_providing' ? 'bg-[#2874f0] text-white' : 'bg-slate-100 text-slate-600'
-                          }`}>
+                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs ${offeringType === 'service_providing' ? 'bg-[#2874f0] text-white' : 'bg-slate-100 text-slate-600'
+                            }`}>
                             <Briefcase className="w-4 h-4" />
                           </div>
                           <span className="text-xs font-black text-slate-900">Service Providing</span>
@@ -468,16 +462,14 @@ function SignupForm() {
                       <button
                         type="button"
                         onClick={() => handleOfferingTypeChange('both')}
-                        className={`p-3 rounded-xl border text-left transition-all relative ${
-                          offeringType === 'both'
-                            ? 'bg-white border-[#2874f0] shadow-md ring-2 ring-[#2874f0]/20'
-                            : 'bg-white/70 border-slate-200 hover:border-blue-300'
-                        }`}
+                        className={`p-3 rounded-xl border text-left transition-all relative ${offeringType === 'both'
+                          ? 'bg-white border-[#2874f0] shadow-md ring-2 ring-[#2874f0]/20'
+                          : 'bg-white/70 border-slate-200 hover:border-blue-300'
+                          }`}
                       >
                         <div className="flex items-center gap-2 mb-1">
-                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs ${
-                            offeringType === 'both' ? 'bg-[#2874f0] text-white' : 'bg-slate-100 text-slate-600'
-                          }`}>
+                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs ${offeringType === 'both' ? 'bg-[#2874f0] text-white' : 'bg-slate-100 text-slate-600'
+                            }`}>
                             <UtensilsCrossed className="w-4 h-4" />
                           </div>
                           <span className="text-xs font-black text-slate-900">Both / Food</span>
@@ -507,8 +499,8 @@ function SignupForm() {
                           offeringType === 'service_providing'
                             ? 'e.g. Sharma Legal & CA Advisory'
                             : offeringType === 'both'
-                            ? 'e.g. Punjab Dhaba & Family Restaurant'
-                            : 'e.g. Gupta General Store'
+                              ? 'e.g. Punjab Dhaba & Family Restaurant'
+                              : 'e.g. Gupta General Store'
                         }
                         className="w-full bg-white text-slate-800 text-xs px-3.5 py-2.5 rounded-lg border border-slate-300 focus:outline-none focus:border-[#2874f0] focus:ring-1 focus:ring-[#2874f0]"
                       />
@@ -711,8 +703,8 @@ function SignupForm() {
                         ? offeringType === 'service_providing'
                           ? 'Register as Service Provider'
                           : offeringType === 'both'
-                          ? 'Register Food / Hospitality Business'
-                          : 'Register as Dukandar (0% Fee)'
+                            ? 'Register Food / Hospitality Business'
+                            : 'Register as Dukandar (0% Fee)'
                         : 'Register as Khareedar (Shopper)'}
                     </span>
                     <ArrowRight className="w-4 h-4" />
@@ -722,17 +714,17 @@ function SignupForm() {
             </form>
 
             {/* OR DIVIDER */}
-            <div className="relative my-4">
+            {/* <div className="relative my-4">
               <div className="absolute inset-0 flex items-center">
                 <div className="w-full border-t border-slate-200" />
               </div>
               <div className="relative flex justify-center text-xs uppercase">
                 <span className="bg-white px-3 text-slate-400 font-semibold">Or continue with</span>
               </div>
-            </div>
+            </div> */}
 
             {/* GOOGLE SIGN IN */}
-            <button
+            {/* <button
               type="button"
               onClick={handleGoogleSignUp}
               disabled={googleLoading}
@@ -761,7 +753,7 @@ function SignupForm() {
                 </svg>
               )}
               <span>Continue with Google</span>
-            </button>
+            </button> */}
 
             {/* FOOTER LINK */}
             <p className="mt-5 text-center text-xs text-slate-500">
